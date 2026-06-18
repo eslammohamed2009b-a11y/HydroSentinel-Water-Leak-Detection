@@ -13,6 +13,8 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LinearRegression
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import IsolationForest
 from sklearn.pipeline import Pipeline
@@ -21,6 +23,7 @@ from sklearn.preprocessing import OneHotEncoder
 
 REQUIRED_COLUMNS = ["Timestamp", "Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Status"]
 MODEL_FEATURES = ["Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Status"]
+DIAGNOSTIC_FEATURES = ["Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Status", "Hour", "Is_Weekend"]
 VALID_OCCUPANCY_STATUSES = {"Class_Hours", "After_Hours", "Vacation", "Event"}
 MAX_FLOW_LPM = 500.0
 MAX_PRESSURE_PSI = 150.0
@@ -29,6 +32,8 @@ DENSITY_WATER = 1000
 DISCHARGE_COEFF = 0.62
 PSI_TO_PASCAL = 6894.76
 DAILY_DRINKING_LITERS_PER_STUDENT = 2.5
+LABELS_PATH = Path(__file__).resolve().parent / "training_labels.csv"
+LEAK_TYPE_LABELS = ["fixture_leak", "valve_failure", "mainline_break"]
 
 
 def find_sample_file(filename_options):
@@ -68,6 +73,98 @@ def add_time_features(df):
         enriched["Is_Weekend"] = 0
         enriched["_time_parsed"] = False
     return enriched
+
+
+def build_synthetic_training_labels(sample_groups, output_path=LABELS_PATH, rows_per_sample=120):
+    """Build a labeled training set from bundled telemetry samples.
+
+    Args:
+        sample_groups: Iterable of sample-path iterables used to seed the
+            synthetic labeled set.
+        output_path: Where to persist the generated CSV file.
+        rows_per_sample: Number of synthetic rows to produce per source row.
+
+    Returns:
+        A DataFrame with Flow, Pressure, Occupancy, Leak_Type, and Leak_Loss_LPM
+        columns.
+    """
+    frames = []
+    rng = np.random.default_rng(42)
+    for group in sample_groups:
+        sample_path = find_sample_file(group)
+        if sample_path is None:
+            continue
+        base_df = pd.read_csv(sample_path)
+        base_df, _ = validate_and_clean_data(base_df, f"seed data from {sample_path.name}")
+        base_df = add_time_features(base_df)
+        for _, row in base_df.iterrows():
+            for _ in range(rows_per_sample):
+                leak_type = rng.choice(["no_leak"] + LEAK_TYPE_LABELS, p=[0.46, 0.24, 0.16, 0.14])
+                if leak_type == "no_leak":
+                    flow_shift = rng.uniform(-1.5, 1.8)
+                    pressure_shift = rng.uniform(-1.0, 1.2)
+                    loss_lpm = 0.0
+                else:
+                    leak_scale = {
+                        "fixture_leak": rng.uniform(4.0, 18.0),
+                        "valve_failure": rng.uniform(14.0, 40.0),
+                        "mainline_break": rng.uniform(35.0, 95.0),
+                    }[leak_type]
+                    flow_shift = leak_scale + rng.normal(0.0, leak_scale * 0.1)
+                    pressure_shift = {
+                        "fixture_leak": rng.uniform(1.0, 6.0),
+                        "valve_failure": rng.uniform(4.0, 12.0),
+                        "mainline_break": rng.uniform(10.0, 28.0),
+                    }[leak_type]
+                    loss_lpm = round(max(flow_shift * rng.uniform(1.05, 1.35), 0.1), 1)
+                is_weekend = int(row["Is_Weekend"])
+                hour = int(row["Hour"])
+                base_flow = float(row["Flow_Rate_LPM"])
+                base_pressure = float(row["Avg_Pressure_PSI"])
+                label_row = {
+                    "Timestamp": row["Timestamp"],
+                    "Hour": hour,
+                    "Is_Weekend": is_weekend,
+                    "Flow_Rate_LPM": round(max(base_flow + flow_shift + rng.normal(0.0, 2.0), 0.1), 1),
+                    "Avg_Pressure_PSI": round(max(base_pressure - pressure_shift + rng.normal(0.0, 1.5), 1.0), 1),
+                    "Occupancy_Status": row["Occupancy_Status"],
+                    "Leak_Type": leak_type,
+                    "Leak_Loss_LPM": loss_lpm,
+                }
+                frames.append(label_row)
+    labeled_df = pd.DataFrame(frames)
+    if labeled_df.empty:
+        raise FileNotFoundError("No sample files were available to build synthetic training labels.")
+    labeled_df.to_csv(output_path, index=False)
+    return labeled_df
+
+
+def load_training_labels(sample_groups):
+    """Load or synthesize the labeled diagnostics dataset.
+
+    Args:
+        sample_groups: Bundled sample path groups used to synthesize labels if
+            no explicit labels file exists.
+
+    Returns:
+        A DataFrame with diagnostic labels and validation summary stored in attrs.
+    """
+    if LABELS_PATH.exists():
+        labeled_df = pd.read_csv(LABELS_PATH)
+    else:
+        labeled_df = build_synthetic_training_labels(sample_groups)
+
+    required = REQUIRED_COLUMNS + ["Leak_Type", "Leak_Loss_LPM"]
+    missing = [col for col in required if col not in labeled_df.columns]
+    if missing:
+        raise ValueError(f"training labels are missing required columns: {', '.join(missing)}")
+
+    cleaned_base, summary = validate_and_clean_data(labeled_df[REQUIRED_COLUMNS], "training labels base")
+    cleaned_labels = labeled_df.loc[cleaned_base.index, required].copy()
+    cleaned_labels["Leak_Type"] = cleaned_labels["Leak_Type"].astype(str)
+    cleaned_labels["Leak_Loss_LPM"] = pd.to_numeric(cleaned_labels["Leak_Loss_LPM"], errors="coerce").fillna(0.0)
+    cleaned_labels.attrs["validation_summary"] = summary
+    return cleaned_labels
 
 
 def validate_required_columns(df):
@@ -185,6 +282,34 @@ def build_feature_pipeline():
     ])
 
 
+def build_diagnostic_feature_frame(df):
+    """Create the feature matrix used by the diagnostic classifier/regressor."""
+    enriched = add_time_features(df)
+    return enriched[DIAGNOSTIC_FEATURES].copy()
+
+
+def build_diagnostic_pipeline_classifier():
+    """Create the RandomForest classifier used for leak type prediction."""
+    return Pipeline([
+        ("preprocess", ColumnTransformer([
+            ("numeric", "passthrough", ["Flow_Rate_LPM", "Avg_Pressure_PSI", "Hour", "Is_Weekend"]),
+            ("categorical", OneHotEncoder(handle_unknown="ignore", sparse_output=False), ["Occupancy_Status"]),
+        ])),
+        ("model", RandomForestClassifier(n_estimators=250, random_state=42, class_weight="balanced")),
+    ])
+
+
+def build_diagnostic_pipeline_regressor():
+    """Create the LinearRegression model used for loss estimation."""
+    return Pipeline([
+        ("preprocess", ColumnTransformer([
+            ("numeric", "passthrough", ["Flow_Rate_LPM", "Avg_Pressure_PSI", "Hour", "Is_Weekend"]),
+            ("categorical", OneHotEncoder(handle_unknown="ignore", sparse_output=False), ["Occupancy_Status"]),
+        ])),
+        ("model", LinearRegression()),
+    ])
+
+
 def load_model_bundle(model_path):
     """Load a persisted HydroSentinel model bundle from disk.
 
@@ -240,6 +365,34 @@ def train_model(df_normal, model_path):
     return payload
 
 
+def train_diagnostic_model(df_normal, model_path):
+    """Train the diagnostic classifier and regressor from labeled data."""
+    training_df, validation_summary = validate_and_clean_data(df_normal, "diagnostic training data")
+    training_df = add_time_features(training_df)
+    feature_frame = build_diagnostic_feature_frame(training_df)
+    leak_type_target = training_df["Leak_Type"].astype(str)
+    loss_target = pd.to_numeric(training_df["Leak_Loss_LPM"], errors="coerce").fillna(0.0)
+
+    classifier = build_diagnostic_pipeline_classifier()
+    regressor = build_diagnostic_pipeline_regressor()
+    classifier.fit(feature_frame, leak_type_target)
+    regressor.fit(feature_frame, loss_target)
+
+    payload = {
+        "classifier": classifier,
+        "regressor": regressor,
+        "feature_columns": DIAGNOSTIC_FEATURES,
+        "training_fingerprint": build_training_fingerprint(training_df),
+        "validation_summary": validation_summary,
+        "feature_names": classifier.named_steps["preprocess"].get_feature_names_out().tolist(),
+        "classifier_classes": classifier.named_steps["model"].classes_.tolist(),
+        "regressor_target_mean": float(loss_target.mean()),
+        "diagnostic_mode": True,
+    }
+    joblib.dump(payload, model_path)
+    return payload
+
+
 def ensure_model(df_normal, model_path):
     """Reuse an existing model when its training fingerprint still matches.
 
@@ -260,6 +413,21 @@ def ensure_model(df_normal, model_path):
             return payload, True
 
     payload = train_model(cleaned_training_df, model_path)
+    return payload, False
+
+
+def ensure_diagnostic_model(df_labeled, model_path):
+    """Reuse or retrain the diagnostic classifier/regressor bundle."""
+    training_df, _ = validate_and_clean_data(df_labeled, "diagnostic training data")
+    training_fingerprint = build_training_fingerprint(training_df)
+    path = Path(model_path)
+
+    if path.exists():
+        payload = joblib.load(path)
+        if payload.get("diagnostic_mode") and payload.get("training_fingerprint") == training_fingerprint:
+            return payload, True
+
+    payload = train_diagnostic_model(training_df, model_path)
     return payload, False
 
 
@@ -288,6 +456,33 @@ def predict_leak(df_new, model_path):
     return scored_df
 
 
+def predict_diagnostic_labels(df_new, model_path):
+    """Predict leak type and loss from the labeled diagnostic model."""
+    scored_df, validation_summary = validate_and_clean_data(df_new, "diagnostic inference data")
+    payload = load_model_bundle(model_path)
+    scored_df = add_time_features(scored_df)
+    feature_frame = build_diagnostic_feature_frame(scored_df)
+    predicted_type = payload["classifier"].predict(feature_frame)
+    predicted_type_proba = payload["classifier"].predict_proba(feature_frame)
+    predicted_loss = payload["regressor"].predict(feature_frame)
+    class_names = list(payload["classifier_classes"])
+    if "no_leak" in class_names:
+        no_leak_index = class_names.index("no_leak")
+        leak_probability = np.round((1.0 - predicted_type_proba[:, no_leak_index]) * 100, 1)
+    else:
+        leak_probability = np.round(predicted_type_proba.max(axis=1) * 100, 1)
+
+    scored_df = scored_df.copy()
+    scored_df["Predicted_Leak_Type"] = predicted_type
+    scored_df["Leak_Type_Confidence"] = np.round(predicted_type_proba.max(axis=1) * 100, 1)
+    scored_df["Predicted_Loss_LPM"] = np.round(np.maximum(predicted_loss, 0.0), 1)
+    scored_df["Leak_Probability"] = leak_probability
+    scored_df["Leak_Flag"] = scored_df["Predicted_Leak_Type"].astype(str).ne("no_leak")
+    scored_df["Anomaly_Score"] = np.where(scored_df["Leak_Flag"], scored_df["Leak_Probability"], 0.0)
+    scored_df.attrs["validation_summary"] = validation_summary
+    return scored_df
+
+
 def evaluate_telemetry(data, model_path):
     """Summarize leak analysis results from a scored telemetry DataFrame.
 
@@ -299,15 +494,9 @@ def evaluate_telemetry(data, model_path):
         A metrics dictionary used by the Streamlit UI.
     """
     payload = load_model_bundle(model_path)
-    scored = predict_leak(data, model_path)
-    scored["Baseline_Flow"] = scored["Occupancy_Status"].map(payload["flow_profile"]).fillna(payload["overall_flow"])
-    scored["Baseline_Pressure"] = scored["Occupancy_Status"].map(payload["pressure_profile"]).fillna(payload["overall_pressure"])
-
-    flow_ratio = scored["Flow_Rate_LPM"] / scored["Baseline_Flow"].replace(0, np.nan)
-    pressure_drop_ratio = ((scored["Baseline_Pressure"] - scored["Avg_Pressure_PSI"]) / scored["Baseline_Pressure"].replace(0, np.nan)).clip(lower=0)
-    scored["Confidence"] = scored["Leak_Probability"]
-    scored["Pressure_Drop_Pct"] = (pressure_drop_ratio.fillna(0) * 100).round(1)
-    scored["Deviation_Pct"] = ((flow_ratio.replace([np.inf, -np.inf], np.nan).fillna(1.0) - 1.0) * 100).round(1)
+    scored = predict_diagnostic_labels(data, model_path)
+    scored["Confidence"] = scored["Leak_Type_Confidence"]
+    scored["Loss_LPM"] = scored["Predicted_Loss_LPM"]
 
     anomalies = scored[scored["Leak_Flag"]]
     has_leak = len(anomalies) > 0
@@ -315,51 +504,50 @@ def evaluate_telemetry(data, model_path):
         "has_leak": has_leak,
         "anomalies": anomalies,
         "df": scored,
-        "leak_lpm": 0.0,
+        "leak_lpm": float(scored["Predicted_Loss_LPM"].max()) if has_leak else 0.0,
         "diameter_mm": 0.0,
         "cost_min": 0.0,
-        "total_liters": 0.0,
+        "total_liters": float(scored["Predicted_Loss_LPM"].sum()) if has_leak else 0.0,
         "metaphor": "No leak detected",
         "students_count": 0,
         "time_parsed": bool(scored["_time_parsed"].iloc[0]),
         "validation_summary": scored.attrs.get("validation_summary", {}),
-        "max_leak_probability": float(scored["Leak_Probability"].max()),
+        "max_leak_probability": float(scored["Leak_Probability"].max()) if has_leak else 0.0,
+        "leak_type": None,
+        "leak_type_confidence": 0.0,
+        "feature_importance": [],
     }
 
     if not has_leak:
         return metrics
 
     top_row = anomalies.loc[anomalies["Anomaly_Score"].idxmax()]
-    max_anomaly = top_row["Flow_Rate_LPM"]
-    baseline_flow_for_row = top_row["Baseline_Flow"]
-    baseline_pressure_for_row = top_row["Baseline_Pressure"]
-    leak_lpm = round(np.maximum(max_anomaly - baseline_flow_for_row, max_anomaly * 0.25), 1)
+    leak_lpm = round(float(top_row["Predicted_Loss_LPM"]), 1)
+    leak_type = str(top_row["Predicted_Leak_Type"])
+    leak_type_confidence = float(top_row["Leak_Type_Confidence"])
 
-    flow_m3_s = (leak_lpm / 1000) / 60
-    press_pascal = max(top_row["Avg_Pressure_PSI"] * PSI_TO_PASCAL, 1.0)
-    velocity = np.sqrt((2 * press_pascal) / DENSITY_WATER)
-    area_m2 = flow_m3_s / (DISCHARGE_COEFF * max(velocity, 0.01))
-    diameter_mm = round((2 * np.sqrt(area_m2 / np.pi)) * 1000, 2)
+    feature_names = payload["feature_names"]
+    importances = payload["classifier"].named_steps["model"].feature_importances_
+    feature_importance = sorted(zip(feature_names, importances), key=lambda item: item[1], reverse=True)[:5]
 
     metrics.update({
         "leak_lpm": leak_lpm,
-        "diameter_mm": diameter_mm,
+        "diameter_mm": round(leak_lpm * 0.6, 2),
         "cost_min": round(leak_lpm * WATER_COST_PER_LITER, 2),
-        "total_liters": round(anomalies["Flow_Rate_LPM"].sum(), 1),
-        "students_count": int(anomalies["Flow_Rate_LPM"].sum() / DAILY_DRINKING_LITERS_PER_STUDENT),
+        "total_liters": round(anomalies["Predicted_Loss_LPM"].sum(), 1),
+        "students_count": int(anomalies["Predicted_Loss_LPM"].sum() / DAILY_DRINKING_LITERS_PER_STUDENT),
         "top_row": top_row,
-        "base_flow": round(baseline_flow_for_row, 1),
-        "base_pressure": round(baseline_pressure_for_row, 1),
-        "confidence": float(top_row["Confidence"]),
-        "deviation_pct": float(top_row["Deviation_Pct"]),
-        "pressure_drop_pct": float(top_row["Pressure_Drop_Pct"]),
+        "base_flow": float(top_row["Flow_Rate_LPM"]),
+        "base_pressure": float(top_row["Avg_Pressure_PSI"]),
+        "confidence": leak_type_confidence,
+        "deviation_pct": 0.0,
+        "pressure_drop_pct": 0.0,
+        "leak_type": leak_type,
+        "leak_type_confidence": leak_type_confidence,
+        "feature_importance": feature_importance,
+        "predicted_loss_lpm": leak_lpm,
     })
 
-    if leak_lpm < 12:
-        metrics["metaphor"] = "a faucet left fully running"
-    elif leak_lpm <= 35:
-        metrics["metaphor"] = "a toilet valve stuck open and constantly refilling"
-    else:
-        metrics["metaphor"] = "a broken pipe releasing water under pressure"
+    metrics["metaphor"] = leak_type.replace("_", " ")
 
     return metrics

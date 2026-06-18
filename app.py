@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 import time
 import hashlib
+import io
 import sys
 from pathlib import Path
 
@@ -16,10 +17,11 @@ import ml_engine
 from ml_engine import (
     REQUIRED_COLUMNS,
     WATER_COST_PER_LITER,
-    ensure_model,
+    ensure_diagnostic_model,
     evaluate_telemetry,
     find_sample_file,
     load_default_training_data,
+    load_training_labels,
     validate_and_clean_data,
 )
 
@@ -203,6 +205,12 @@ if "analysis_target_signature" not in st.session_state:
     st.session_state["analysis_target_signature"] = None
 if "uploaded_file_size" not in st.session_state:
     st.session_state["uploaded_file_size"] = "No file"
+if "telemetry_file_bytes" not in st.session_state:
+    st.session_state["telemetry_file_bytes"] = None
+if "telemetry_file_name" not in st.session_state:
+    st.session_state["telemetry_file_name"] = None
+if "telemetry_file_signature" not in st.session_state:
+    st.session_state["telemetry_file_signature"] = None
 
 
 def handle_telemetry_upload_change():
@@ -212,11 +220,20 @@ def handle_telemetry_upload_change():
         st.session_state["uploaded_file_size"] = "No file"
         st.session_state["analysis_requested"] = False
         st.session_state["analysis_target_signature"] = None
+        st.session_state["telemetry_file_bytes"] = None
+        st.session_state["telemetry_file_name"] = None
+        st.session_state["telemetry_file_signature"] = None
         return
 
+    file_bytes = uploaded.getvalue()
+    file_signature = f"{uploaded.name}:{uploaded.size}:{hashlib.sha256(file_bytes).hexdigest()[:12]}"
+
     st.session_state["uploaded_file_size"] = uploaded.size
-    st.session_state["analysis_requested"] = False
-    st.session_state["analysis_target_signature"] = None
+    st.session_state["telemetry_file_bytes"] = file_bytes
+    st.session_state["telemetry_file_name"] = uploaded.name
+    st.session_state["telemetry_file_signature"] = file_signature
+    st.session_state["analysis_requested"] = True
+    st.session_state["analysis_target_signature"] = file_signature
 
 with st.sidebar:
     st.subheader("📥 Download Samples")
@@ -262,13 +279,7 @@ with st.sidebar:
     st.markdown("---")
 
     st.subheader("📥 Your Data")
-    training_file = st.file_uploader(
-        "Upload normal-day training readings",
-        type=["csv"],
-        key="training_file",
-        help="Use clean no-leak data. If you have event-day readings without leaks, include them too so the model learns that those patterns are still normal.",
-    )
-    st.caption("If you skip this, HydroSentinel trains from the bundled normal-day and event-day no-leak samples.")
+    st.caption("HydroSentinel trains from the bundled normal-day and event-day no-leak samples.")
 
     mode = st.radio(
         "How should we get sensor readings?",
@@ -293,7 +304,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🤖 Detection Model")
-    st.caption("HydroSentinel trains an IsolationForest model on normal-day readings, then assigns an anomaly score and leak probability to every new row.")
+    st.caption("HydroSentinel trains a diagnostic model bundle on labeled telemetry, then estimates leak type, probability, and loss for each new row.")
 
     st.markdown("---")
     st.markdown(
@@ -328,7 +339,7 @@ st.markdown("""
     <div class="context-note">
         <b>About this system:</b> HydroSentinel AI is a decision-support system for school water infrastructure,
         built to give maintenance teams clear, auditable evidence for acting on leaks by learning the normal
-        relationship between flow, pressure, and occupancy from normal-day data with an IsolationForest model. This version reads water-use data from
+        relationship between flow, pressure, and occupancy from labeled telemetry with a diagnostic model bundle. This version reads water-use data from
         a CSV file (or a simulated live demo) to stand in for direct sensor integration, which wasn't available to
         test during development. In a real school deployment, HydroSentinel AI would connect directly to smart water
         meters and pressure sensors, watching them continuously day and night to support the maintenance team's
@@ -438,19 +449,12 @@ def save_feedback(analysis_id, verdict, result):
     return append_record(FEEDBACK_PATH, feedback_record)
 
 
-def load_training_dataframe(training_file):
+def load_training_dataframe():
     """Load and validate the training dataset used by the UI.
-
-    Args:
-        training_file: Optional uploaded training file from Streamlit.
 
     Returns:
         A tuple of (training_dataframe, validation_summary).
     """
-    if training_file is not None:
-        raw_training_df = pd.read_csv(training_file)
-        return validate_and_clean_data(raw_training_df, "training data")
-
     default_training_df = load_default_training_data([sample_files["normal"], sample_files["event"]])
     if default_training_df is None:
         raise FileNotFoundError("No bundled no-leak training samples are available.")
@@ -466,8 +470,7 @@ def load_target_dataframe(uploaded_file):
     Returns:
         A tuple of (target_dataframe, validation_summary).
     """
-    uploaded_file.seek(0)
-    raw_df = pd.read_csv(uploaded_file)
+    raw_df = pd.read_csv(io.BytesIO(uploaded_file))
     return validate_and_clean_data(raw_df, "uploaded sensor data")
 
 
@@ -524,50 +527,95 @@ def probability_status(probability):
 
 
 def build_recommendations(res):
-    """Rule-based recommendation engine: always returns exactly 3 prioritized
-    actions (critical / important / preventive), each with an action, reason,
-    likely location, fix, and the rule that set its priority."""
-    diameter = res["diameter_mm"]
-    large_leak = diameter > LARGE_LEAK_DIAMETER_MM
+    """Generate recommendations from the classifier's predicted leak type."""
+    leak_type = str(res.get("leak_type", "")).strip() or "fixture_leak"
+    leak_type_label = leak_type.replace("_", " ").title()
+    confidence = float(res.get("leak_type_confidence", 0.0))
+    loss_lpm = float(res.get("leak_lpm", 0.0))
 
-    if large_leak:
-        priority_1 = {
-            "tag": "Priority 1 — Critical", "tag_class": "high",
-            "title": "Shut off the main water valve and call a licensed plumber",
-            "reason": "Flow this high, combined with a pressure drop at the same time, points to a broken pipe or major fitting failure rather than a single fixture.",
-            "location": "Main supply line or underground pipe network near the affected meter.",
-            "fix": "A plumber needs to locate and repair the ruptured section; shutting the main valve stops the loss until the repair is scheduled.",
-            "why_priority": f"The estimated opening size (Ø {diameter} mm) and the size of the flow spike mean this keeps wasting large volumes of water every hour it runs.",
-        }
-    else:
-        priority_1 = {
-            "tag": "Priority 1 — Critical", "tag_class": "high",
-            "title": "Send a maintenance technician to inspect nearby restrooms and fixtures",
-            "reason": "The flow jumped once and then held steady at a high level, which matches a stuck valve or a running toilet rather than a structural failure.",
-            "location": "Restroom fixtures (toilet flush valve, urinal sensor, or sink faucet) closest to the flagged meter.",
-            "fix": "Replace or adjust the stuck flapper/valve, or tighten a faucet that isn't shutting off completely.",
-            "why_priority": "This is the most likely source of the flagged flow and is usually a quick, low-cost fix once located.",
-        }
-
-    priority_2 = {
-        "tag": "Priority 2 — Important", "tag_class": "medium",
-        "title": "Isolate the affected zone while the repair is scheduled",
-        "reason": "Closing the nearest branch valve narrows the search and limits water loss without shutting off water to the whole school.",
-        "location": "Branch shutoff valve serving the zone or wing closest to the flagged meter.",
-        "fix": "Close the zone valve, then re-check the flow reading — if it drops back to baseline, the leak is confirmed to be in that zone.",
-        "why_priority": "This doesn't fix the root cause, but it stops ongoing waste and helps the technician find the leak faster once they arrive.",
+    templates = {
+        "fixture_leak": {
+            "priority_1": {
+                "tag": "Priority 1 — Critical", "tag_class": "high",
+                "title": "Inspect the closest restroom fixture and stop the running outlet",
+                "reason": f"The classifier predicts a {leak_type_label} pattern with {confidence:.0f}% confidence, which fits a fixture that is not sealing properly.",
+                "location": "Nearby restroom fixture or faucet assembly.",
+                "fix": "Check the flush valve, flapper, or faucet cartridge and replace the worn part.",
+                "why_priority": f"The regressor estimates about {loss_lpm:.1f} L/min of loss, so stopping the fixture now prevents continued waste.",
+            },
+            "priority_2": {
+                "tag": "Priority 2 — Important", "tag_class": "medium",
+                "title": "Validate the valve seal after the first repair",
+                "reason": "Fixture leaks often return if the seal or actuator is not checked after the repair.",
+                "location": "The same fixture that produced the flagged reading.",
+                "fix": "Run a follow-up flow check after the part is replaced to confirm the leak has stopped.",
+                "why_priority": "A second check prevents a partial repair from being mistaken for a full fix.",
+            },
+            "priority_3": {
+                "tag": "Priority 3 — Preventive", "tag_class": "low",
+                "title": "Inspect nearby fixtures on the same branch line",
+                "reason": "A single fixture failure often indicates wear across the same branch line.",
+                "location": "Neighboring restrooms or sinks on the same branch.",
+                "fix": "Inspect the next closest fixtures for slow drips or poor shutoff.",
+                "why_priority": "Catching a second worn fixture now reduces the chance of another alert later.",
+            },
+        },
+        "valve_failure": {
+            "priority_1": {
+                "tag": "Priority 1 — Critical", "tag_class": "high",
+                "title": "Send a technician to repair the stuck valve",
+                "reason": f"The classifier predicts a {leak_type_label} pattern with {confidence:.0f}% confidence, which often shows up as sustained extra flow.",
+                "location": "Branch shutoff or control valve serving the flagged area.",
+                "fix": "Inspect the valve actuator, spring, and seat; replace the valve if it does not close cleanly.",
+                "why_priority": f"The regressor estimates about {loss_lpm:.1f} L/min of loss, which is enough to justify immediate repair.",
+            },
+            "priority_2": {
+                "tag": "Priority 2 — Important", "tag_class": "medium",
+                "title": "Isolate the affected zone until the valve is fixed",
+                "reason": "Isolating the zone reduces waste while preserving service elsewhere in the building.",
+                "location": "Zone valve upstream of the failed control point.",
+                "fix": "Close the nearest upstream valve, then verify that the model score drops after repair.",
+                "why_priority": "This limits water loss without disrupting the entire school.",
+            },
+            "priority_3": {
+                "tag": "Priority 3 — Preventive", "tag_class": "low",
+                "title": "Review other valves on the same maintenance cycle",
+                "reason": "A valve failure can be a sign of aging components in the same system.",
+                "location": "Other branch valves in the same wing.",
+                "fix": "Schedule inspections for nearby valves during the next maintenance window.",
+                "why_priority": "Preventive checks reduce repeated failures later in the term.",
+            },
+        },
+        "mainline_break": {
+            "priority_1": {
+                "tag": "Priority 1 — Critical", "tag_class": "high",
+                "title": "Shut off the main line and call emergency plumbing support",
+                "reason": f"The classifier predicts a {leak_type_label} pattern with {confidence:.0f}% confidence, which points to a high-impact structural failure.",
+                "location": "Main supply line, underground run, or primary riser.",
+                "fix": "Close the main valve and schedule immediate pipe location and repair.",
+                "why_priority": f"The regressor estimates about {loss_lpm:.1f} L/min of loss, which can scale quickly if left running.",
+            },
+            "priority_2": {
+                "tag": "Priority 2 — Important", "tag_class": "medium",
+                "title": "Mark the affected line and isolate the zone",
+                "reason": "A main line break should be isolated so the repair team can work safely.",
+                "location": "Main distribution line feeding the affected wing.",
+                "fix": "Keep the isolated section closed until pressure tests confirm the repair.",
+                "why_priority": "This helps protect the rest of the system from further damage.",
+            },
+            "priority_3": {
+                "tag": "Priority 3 — Preventive", "tag_class": "low",
+                "title": "Review pressure history and nearby pipe joints",
+                "reason": "Large breaks often follow long-term stress at the same pipe section.",
+                "location": "Adjacencies around the failed run.",
+                "fix": "Inspect history logs for repeated pressure drops and replace weak couplings.",
+                "why_priority": "Preventive checks reduce repeat breaks after the main repair.",
+            },
+        },
     }
 
-    priority_3 = {
-        "tag": "Priority 3 — Preventive", "tag_class": "low",
-        "title": "Check outdoor irrigation and HVAC/mechanical equipment",
-        "reason": "Some flagged readings occurred outside normal occupancy hours, which points to automated equipment rather than people using water.",
-        "location": "Irrigation controller valves or the HVAC cooling system's water makeup valve.",
-        "fix": "Inspect solenoid valves and makeup-water controls for a stuck-open condition; recalibrate or replace as needed.",
-        "why_priority": "This isn't necessarily today's leak, but stuck irrigation or HVAC valves are a common, recurring source of school water waste worth ruling out.",
-    }
-
-    return [priority_1, priority_2, priority_3]
+    template = templates.get(leak_type, templates["fixture_leak"])
+    return [template["priority_1"], template["priority_2"], template["priority_3"]]
 
 
 def generate_demo_row(hour, baseline_flow, inject_leak=False):
@@ -605,9 +653,12 @@ upload_ready = upload_mode_active and uploaded_file is not None
 current_upload_signature = None
 
 if upload_ready:
-    current_upload_signature = f"{uploaded_file.name}:{uploaded_file.size}"
+    if st.session_state.get("telemetry_file_bytes") is None:
+        handle_telemetry_upload_change()
+    current_upload_signature = st.session_state.get("telemetry_file_signature")
     if st.session_state.get("analysis_target_signature") != current_upload_signature:
-        st.session_state["analysis_requested"] = False
+        st.session_state["analysis_requested"] = True
+        st.session_state["analysis_target_signature"] = current_upload_signature
 
 analyze_clicked = False
 if upload_mode_active:
@@ -623,22 +674,24 @@ should_run_upload_analysis = (
 )
 
 try:
-    training_df, training_summary = load_training_dataframe(training_file)
+    training_df = load_training_labels([sample_files["normal"], sample_files["event"]])
+    training_summary = training_df.attrs.get("validation_summary", {})
 except Exception as e:
-    st.error(f"We couldn't prepare the training data: {e}")
+    st.error(f"We couldn't prepare the diagnostic training data: {e}")
 
 if upload_mode_active and uploaded_file is None:
     st.info("Upload a telemetry CSV file to start the analysis.")
 
 if upload_ready:
-    st.write("تم استلام الملف بنجاح")
+    st.write("File received successfully.")
+    st.success(f"Loaded file: {st.session_state.get('telemetry_file_name', uploaded_file.name)}")
     if not should_run_upload_analysis:
         st.info("Click Analyze to start processing the uploaded telemetry file.")
     results_placeholder.empty()
 
 if should_run_upload_analysis:
     try:
-        target_df, target_summary = load_target_dataframe(uploaded_file)
+        target_df, target_summary = load_target_dataframe(st.session_state.get("telemetry_file_bytes"))
     except Exception as e:
         st.error(f"We couldn't prepare the uploaded telemetry: {e}")
 
@@ -690,7 +743,7 @@ if should_render_dashboard:
 
         with st.spinner("Analyzing telemetry with HydroSentinel AI..."):
             try:
-                _, model_reused = ensure_model(training_df, MODEL_PATH)
+                _, model_reused = ensure_diagnostic_model(training_df, MODEL_PATH)
             except Exception as e:
                 ml_error = f"We couldn't prepare the leak model: {e}"
 
@@ -722,14 +775,14 @@ if should_render_dashboard:
                 )
 
             if model_reused is True:
-                st.caption("Model cache: reused the persisted IsolationForest model because the training data signature did not change.")
+                st.caption("Model cache: reused the persisted diagnostic model because the training labels did not change.")
             elif model_reused is False:
-                st.caption("Model cache: training data changed, so HydroSentinel retrained and updated the persisted model.")
+                st.caption("Model cache: training labels changed, so HydroSentinel retrained and updated the persisted diagnostic model.")
 
             if not res["time_parsed"]:
                 st.caption("Note: we couldn't read dates/times from the Timestamp column, so time-of-day context wasn't used in this analysis.")
 
-            probability_value = float(res.get("confidence", res.get("max_leak_probability", 0.0))) if res["has_leak"] else float(res.get("max_leak_probability", 0.0))
+            probability_value = float(res.get("confidence", 0.0)) if res["has_leak"] else 0.0
             status_label, status_color = probability_status(probability_value)
             metric_col, status_col = st.columns([1, 2])
             with metric_col:
@@ -745,7 +798,7 @@ if should_render_dashboard:
                 st.markdown(f"""
                 <div class="status-banner critical">
                     <div class="status-headline">🚨 Leak Detected — {sev_label} severity</div>
-                    <div class="status-sub">A water-use pattern diverged from the normal profile learned by the IsolationForest model. Review the details below before taking action.</div>
+                    <div class="status-sub">A water-use pattern diverged from the learned diagnostic profile. Review the predicted leak type, confidence, and loss estimate before taking action.</div>
                 </div>
                 """, unsafe_allow_html=True)
             else:
@@ -766,8 +819,8 @@ if should_render_dashboard:
                         <div class="footnote">{res['confidence']:.0f}% detection confidence</div></div>""", unsafe_allow_html=True)
                 with c2:
                     st.markdown(f"""<div class="answer-card accent-{sev_class}">
-                    <div class="label">Severity</div><div class="value">{sev_label}</div>
-                    <div class="footnote">Ø {res['diameter_mm']} mm estimated opening</div></div>""", unsafe_allow_html=True)
+                    <div class="label">Predicted leak type</div><div class="value">{str(res.get('leak_type', 'Unknown')).replace('_', ' ').title()}</div>
+                    <div class="footnote">{res.get('leak_type_confidence', 0.0):.0f}% classifier confidence</div></div>""", unsafe_allow_html=True)
                 with c3:
                     st.markdown(f"""<div class="answer-card accent-warning">
                     <div class="label">Water being lost</div><div class="value">{res['leak_lpm']} L/min</div>
@@ -825,7 +878,7 @@ if should_render_dashboard:
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             )
             st.plotly_chart(fig, use_container_width=True)
-            st.caption("Each dot marks a reading that the IsolationForest model scored as anomalous relative to the normal-day training pattern.")
+            st.caption("Each dot marks a reading that the diagnostic model bundle scored as unusual relative to the learned labeled telemetry pattern.")
 
         with tab2:
             if res["has_leak"]:
@@ -838,7 +891,7 @@ if should_render_dashboard:
                         <div class="pair">Baseline flow: <b>{res['base_flow']} L/min</b> → Current flow: <b>{top_row['Flow_Rate_LPM']} L/min</b> ({res['deviation_pct']:.0f}% above baseline)</div>
                         <div class="pair">Baseline pressure: <b>{res['base_pressure']} PSI</b> → Current pressure: <b>{top_row['Avg_Pressure_PSI']} PSI</b> ({res['pressure_drop_pct']:.0f}% drop)</div>
                     </div>
-                    <div class="why-reason">This reading received one of the highest anomaly scores from the IsolationForest model after it learned the normal relationship between flow, pressure, and occupancy status. Rising flow paired with falling pressure still matches the physical signature of water escaping through an unintended opening: when a fixture is used normally, flow and pressure tend to move together, but a leak pulls flow up while pressure drops.</div>
+                    <div class="why-reason">This reading received one of the strongest diagnostic signals after the classifier learned the relationships between flow, pressure, occupancy status, hour, and weekend context. Rising flow paired with falling pressure still matches the physical signature of water escaping through an unintended opening: when a fixture is used normally, flow and pressure tend to move together, but a leak pulls flow up while pressure drops.</div>
                     <span class="why-evidence">To put it in perspective: this is roughly the same rate as {res['metaphor']}.</span>
                 </div>
                 """, unsafe_allow_html=True)
@@ -907,9 +960,9 @@ if should_render_dashboard:
 st.markdown("""
     <div class="rai-card">
         <h4>⚖️ What this decision-support system can and can't do</h4>
-        <div class="rai-item"><b>A model-based score, not a guess.</b> The confidence percentage is derived from the anomaly score produced by the IsolationForest model after it learns normal no-leak patterns across flow, pressure, and occupancy context.</div>
+        <div class="rai-item"><b>A model-based score, not a guess.</b> The confidence percentage is derived from the classifier probability and the regression loss estimate after the diagnostic model learns labeled telemetry patterns across flow, pressure, occupancy, hour, and weekend context.</div>
         <div class="rai-item"><b>A person always decides.</b> This system never shuts off water or contacts anyone automatically. Every alert needs a maintenance team member to review it and choose what to do — shutting off water during school hours can create its own safety and sanitation risks.</div>
         <div class="rai-item"><b>Known limitation.</b> Unusual but legitimate events can still look abnormal if the training data did not include similar no-leak examples. The model becomes more reliable as you retrain it on clean normal and event-day data.</div>
-        <div class="rai-item"><b>How this prototype was validated.</b> This version trains on the bundled clean normal and event-day samples unless you provide your own no-leak training file. Every run is also written to logs.csv, and user reviews of alerts are written to feedback.csv to support future tuning.</div>
+        <div class="rai-item"><b>How this prototype was validated.</b> This version trains on the bundled labeled telemetry or a synthesized labels file when needed. Every run is also written to logs.csv, and user reviews of alerts are written to feedback.csv to support future tuning.</div>
     </div>
     """, unsafe_allow_html=True)
