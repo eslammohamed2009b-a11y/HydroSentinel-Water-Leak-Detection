@@ -183,53 +183,54 @@ LARGE_LEAK_DIAMETER_MM = 15.0    # above this estimated opening size, treat as a
 # =============================================================================
 
 # Determine the directory where sample files are located
-# Use relative paths for Streamlit Cloud compatibility
+# Use the app file location so Streamlit Cloud and local execution both find the CSVs.
+app_dir = Path(__file__).resolve().parent
 sample_files = {
-    "no_leak": ["no_leak.csv", "./no_leak.csv", "../no_leak.csv"],
-    "leak_normal": ["leak_normal.csv", "./leak_normal.csv", "../leak_normal.csv"],
-    "leak_event": ["leak_event.csv", "./leak_event.csv", "../leak_event.csv"],
-    "example_normal_day": ["example_normal_day_2026-10-05.csv", "./example_normal_day_2026-10-05.csv", "../example_normal_day_2026-10-05.csv"]
+    "normal": [app_dir / "normal.csv"],
+    "leak": [app_dir / "leak.csv"],
+    "event": [app_dir / "event.csv"],
+    "event_leak": [app_dir / "event_leak.csv"]
 }
 
 def find_sample_file(filename_options):
-    """Find sample file in multiple possible locations"""
+    """Find sample file in multiple possible locations."""
     for filename in filename_options:
-        if os.path.exists(filename):
-            return filename
+        path = Path(filename)
+        if path.exists():
+            return path
     return None
 
 with st.sidebar:
     st.subheader("📥 Download Samples")
     try:
-        no_leak_file = find_sample_file(sample_files["no_leak"])
-        leak_normal_file = find_sample_file(sample_files["leak_normal"])
-        leak_event_file = find_sample_file(sample_files["leak_event"])
+        normal_file = find_sample_file(sample_files["normal"])
+        leak_file = find_sample_file(sample_files["leak"])
+        event_file = find_sample_file(sample_files["event"])
+        event_leak_file = find_sample_file(sample_files["event_leak"])
         
-        if no_leak_file:
-            with open(no_leak_file, "rb") as f:
-                st.download_button("📥 No Leak Data", f, "no_leak.csv")
+        if normal_file:
+            with open(normal_file, "rb") as f:
+                st.download_button("📥 Normal Day Data", f, "normal.csv")
         else:
-            st.warning("No Leak Data file not found in project")
+            st.warning("Normal Day Data file not found in project")
             
-        if leak_normal_file:
-            with open(leak_normal_file, "rb") as f:
-                st.download_button("⚠️ Leak Data (Normal)", f, "leak_normal.csv")
+        if leak_file:
+            with open(leak_file, "rb") as f:
+                st.download_button("⚠️ Leak Day Data", f, "leak.csv")
         else:
-            st.warning("Leak Normal Data file not found in project")
+            st.warning("Leak Day Data file not found in project")
             
-        if leak_event_file:
-            with open(leak_event_file, "rb") as f:
-                st.download_button("🚨 Leak Data (Event)", f, "leak_event.csv")
+        if event_file:
+            with open(event_file, "rb") as f:
+                st.download_button("📈 Event Day Data", f, "event.csv")
         else:
-            st.warning("Leak Event Data file not found in project")
-        
-        # Example normal day CSV (added by contextual rules work)
-        example_file = find_sample_file(sample_files["example_normal_day"])
-        if example_file:
-            with open(example_file, "rb") as f:
-                st.download_button("📥 Example Normal Day (2026-10-05)", f, "example_normal_day_2026-10-05.csv")
+            st.warning("Event Day Data file not found in project")
+            
+        if event_leak_file:
+            with open(event_leak_file, "rb") as f:
+                st.download_button("🚨 Event + Leak Day Data", f, "event_leak.csv")
         else:
-            st.info("Example Normal Day file not found in project")
+            st.warning("Event + Leak Day Data file not found in project")
     except Exception as e:
         st.warning(f"Error loading sample files: {str(e)}")
 
