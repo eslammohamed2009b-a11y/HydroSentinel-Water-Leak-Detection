@@ -186,7 +186,8 @@ LARGE_LEAK_DIAMETER_MM = 15.0    # above this estimated opening size, treat as a
 # Use relative paths for Streamlit Cloud compatibility
 sample_files = {
     "no_leak": ["no_leak.csv", "./no_leak.csv", "../no_leak.csv"],
-    "leak_normal": ["leak_normal.csv", "./leak_normal.csv", "../leak_normal.csv"]
+    "leak_normal": ["leak_normal.csv", "./leak_normal.csv", "../leak_normal.csv"],
+    "leak_event": ["leak_event.csv", "./leak_event.csv", "../leak_event.csv"]
 }
 
 def find_sample_file(filename_options):
@@ -201,6 +202,7 @@ with st.sidebar:
     try:
         no_leak_file = find_sample_file(sample_files["no_leak"])
         leak_normal_file = find_sample_file(sample_files["leak_normal"])
+        leak_event_file = find_sample_file(sample_files["leak_event"])
         
         if no_leak_file:
             with open(no_leak_file, "rb") as f:
@@ -210,9 +212,15 @@ with st.sidebar:
             
         if leak_normal_file:
             with open(leak_normal_file, "rb") as f:
-                st.download_button("⚠️ Leak Data", f, "leak_normal.csv")
+                st.download_button("⚠️ Leak Data (Normal)", f, "leak_normal.csv")
         else:
-            st.warning("Leak Data file not found in project")
+            st.warning("Leak Normal Data file not found in project")
+            
+        if leak_event_file:
+            with open(leak_event_file, "rb") as f:
+                st.download_button("🚨 Leak Data (Event)", f, "leak_event.csv")
+        else:
+            st.warning("Leak Event Data file not found in project")
     except Exception as e:
         st.warning(f"Error loading sample files: {str(e)}")
 
