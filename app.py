@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import IsolationForest
 import plotly.graph_objects as go
 import time
 
@@ -62,7 +61,7 @@ st.markdown("""
     .app-title { font-family: 'Lora', Georgia, serif; font-weight: 700; font-size: 2rem; color: var(--ink); margin-bottom: 2px; }
     .app-subtitle { font-family: 'Inter', sans-serif; color: var(--ink-soft); font-size: 1rem; margin-bottom: 22px; }
 
-    /* Mission pipeline strip — literal sequence: data in -> AI -> insight -> action */
+    /* Mission pipeline strip — literal sequence: data in -> analysis -> insight -> action */
     .pipeline-wrap { display: flex; align-items: center; gap: 10px; margin: 6px 0 26px 0; flex-wrap: wrap; }
     .pipeline-step {
         background-color: var(--panel); border: 1px solid var(--border); border-radius: 8px;
@@ -127,9 +126,11 @@ st.markdown("""
     }
     .action-card.priority-high { border-left: 4px solid var(--coral); }
     .action-card.priority-medium { border-left: 4px solid var(--amber); }
+    .action-card.priority-low { border-left: 4px solid var(--teal); }
     .action-tag { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 9px; border-radius: 20px; }
     .action-tag.high { background: var(--coral-soft); color: var(--coral); }
     .action-tag.medium { background: var(--amber-soft); color: var(--amber); }
+    .action-tag.low { background: var(--teal-soft); color: var(--teal); }
     .action-title { font-family: 'Lora', serif; font-weight: 700; font-size: 1.05rem; margin: 8px 0 10px 0; }
     .action-row { font-size: 0.9rem; margin-bottom: 6px; line-height: 1.5; }
     .action-row b { color: var(--ink); }
@@ -166,8 +167,17 @@ DAILY_DRINKING_LITERS_PER_STUDENT = 2.5
 
 REQUIRED_COLUMNS = ["Timestamp", "Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Status"]
 
+# ---- Deterministic detection thresholds (rule + physics + statistics based) ----
+# No probabilistic tuning knob: these fixed thresholds are the entire detection logic.
+PCT_THRESHOLD = 1.30             # flow must be at least 30% above baseline to flag
+ABS_THRESHOLD_LPM = 4.0          # OR at least 4 L/min above baseline to flag
+EVENT_PCT_THRESHOLD = 1.80       # stricter threshold during an expected high-use period
+EVENT_ABS_THRESHOLD_LPM = 8.0    # stricter absolute threshold during an expected high-use period
+BASELINE_PERCENTILE = 0.40       # lower-than-median percentile, robust to a few elevated leak readings
+LARGE_LEAK_DIAMETER_MM = 15.0    # above this estimated opening size, treat as a structural leak
+
 # =============================================================================
-# SIDEBAR — DATA INPUT & AI SETTINGS
+# SIDEBAR — DATA INPUT & DETECTION CONTEXT
 # =============================================================================
 with st.sidebar:
     st.markdown(
@@ -195,18 +205,15 @@ with st.sidebar:
         stream_trigger = st.button("▶ Run live demo")
 
     st.markdown("---")
-    st.subheader("🧠 AI Settings")
-    ai_sensitivity = st.slider(
-        "Detection sensitivity", 0.01, 0.15, 0.04, step=0.01,
-        help="Higher sensitivity flags more readings for review (more false alarms). Lower sensitivity only flags the clearest issues.",
-    )
+    st.subheader("⚙️ Detection Context")
+    st.caption("HydroSentinel uses fixed statistical and physical thresholds — there's no sensitivity dial to tune. These two settings only give the system extra context about expected high water use.")
     flag_event_day = st.checkbox(
         "Today includes a planned event (assembly, sports day, deep cleaning)",
-        help="Expected high water use on event days can look like a leak. Checking this tells the AI to be more careful before flagging normal daytime usage.",
+        help="Expected high water use on event days can look like a leak. Checking this raises the detection threshold for daytime readings so normal event activity isn't flagged.",
     )
     event_window_enabled = st.checkbox(
         "Enable a specific event window",
-        help="Use a time window when planned activity is expected, so the AI is less likely to flag normal high use as a leak.",
+        help="Use a time window when planned activity is expected. Readings inside this window are held to a stricter, fixed threshold before being flagged as a leak.",
     )
     event_start = None
     event_end = None
@@ -243,7 +250,7 @@ st.markdown("""
     <div class="pipeline-wrap">
         <div class="pipeline-step"><span class="num">1</span> 📥 Sensor Readings</div>
         <div class="pipeline-arrow">→</div>
-        <div class="pipeline-step"><span class="num">2</span> 🧠 AI Analysis</div>
+        <div class="pipeline-step"><span class="num">2</span> 🔎 Pattern Analysis</div>
         <div class="pipeline-arrow">→</div>
         <div class="pipeline-step"><span class="num">3</span> 🌍 Environmental Insight</div>
         <div class="pipeline-arrow">→</div>
@@ -254,11 +261,12 @@ st.markdown("""
 st.markdown("""
     <div class="context-note">
         <b>About this system:</b> HydroSentinel AI is a decision-support system for school water infrastructure,
-        built to give maintenance teams the evidence and reasoning they need to act on leaks quickly and confidently —
-        not just a statistical anomaly flag. This version reads water-use data from a CSV file (or a simulated live demo)
-        to stand in for direct sensor integration, which wasn't available to test during development. In a real school
-        deployment, HydroSentinel AI would connect directly to smart water meters and pressure sensors, watching them
-        continuously day and night to support the maintenance team's day-to-day decisions.
+        built to give maintenance teams clear, auditable evidence for acting on leaks — using fixed statistical
+        baselines and physical flow-pressure rules, not a black-box model. This version reads water-use data from
+        a CSV file (or a simulated live demo) to stand in for direct sensor integration, which wasn't available to
+        test during development. In a real school deployment, HydroSentinel AI would connect directly to smart water
+        meters and pressure sensors, watching them continuously day and night to support the maintenance team's
+        day-to-day decisions.
     </div>
     """, unsafe_allow_html=True)
 
@@ -267,8 +275,7 @@ st.markdown("""
 # HELPERS
 # =============================================================================
 def add_time_features(df):
-    """Pulls Hour and Day Type out of the timestamp so the AI can judge
-    whether a reading is unusual *for that time of day*, not just on average."""
+    """Pulls Hour and Day Type out of the timestamp for context and reporting."""
     df = df.copy()
     try:
         dt = pd.to_datetime(df["Timestamp"])
@@ -302,81 +309,71 @@ def significance_level(total_liters):
         return "Severe"
 
 
-def get_baseline_for_row(normal_df, row):
-    """Finds the 'normal' flow and pressure for the same kind of time period
-    (e.g. Class Hours) so we can show a fair Normal vs Current comparison."""
-    bucket = normal_df[normal_df["Occupancy_Status"] == row["Occupancy_Status"]]
-    if len(bucket) < 3:
-        bucket = normal_df
-    base_flow = bucket["Flow_Rate_LPM"].median()
-    base_pressure = bucket["Avg_Pressure_PSI"].median()
-    if pd.isna(base_flow):
-        base_flow = row["Flow_Rate_LPM"]
-    if pd.isna(base_pressure):
-        base_pressure = row["Avg_Pressure_PSI"]
-    return round(base_flow, 1), round(base_pressure, 1)
+def compute_baselines(data):
+    """Computes a fixed statistical baseline flow/pressure per occupancy period.
+    Uses a lower percentile (not the mean/median) so a handful of elevated leak
+    readings can't pull the 'normal' reference upward — a deliberate, auditable
+    statistical choice rather than a tuned model parameter."""
+    flow_baseline = data.groupby("Occupancy_Status")["Flow_Rate_LPM"].quantile(BASELINE_PERCENTILE)
+    pressure_baseline = data.groupby("Occupancy_Status")["Avg_Pressure_PSI"].median()
+
+    overall_flow = data["Flow_Rate_LPM"].quantile(BASELINE_PERCENTILE)
+    overall_pressure = data["Avg_Pressure_PSI"].median()
+
+    counts = data["Occupancy_Status"].value_counts()
+    for status in flow_baseline.index:
+        if counts.get(status, 0) < 3:
+            flow_baseline[status] = overall_flow
+            pressure_baseline[status] = overall_pressure
+
+    return flow_baseline, pressure_baseline, overall_flow, overall_pressure
 
 
-def evaluate_telemetry(data, sensitivity, dampen_event_day=False, event_start=None, event_end=None):
+def evaluate_telemetry(data, dampen_event_day=False, event_start=None, event_end=None):
+    """Deterministic leak detection: fixed statistical baselines + percentage/absolute
+    flow-deviation rules + flow-pressure physics. No probabilistic model, no tunable
+    sensitivity — every flagged reading can be explained with the same fixed rule."""
     data = add_time_features(data)
 
     data["In_Event_Window"] = False
     if event_start and event_end and event_start < event_end:
         data["In_Event_Window"] = data["Timestamp"].between(event_start, event_end)
 
-    occupancy_map = {"Class_Hours": 1, "After_Hours": 2, "Weekend": 3}
-    data["Occupancy_Encoded"] = data["Occupancy_Status"].map(occupancy_map).fillna(0)
+    flow_baseline_map, pressure_baseline_map, overall_flow, overall_pressure = compute_baselines(data)
+    data["Baseline_Flow"] = data["Occupancy_Status"].map(flow_baseline_map).fillna(overall_flow)
+    data["Baseline_Pressure"] = data["Occupancy_Status"].map(pressure_baseline_map).fillna(overall_pressure)
+    data["Baseline_Flow"] = data["Baseline_Flow"].replace(0, overall_flow if overall_flow > 0 else 1.0)
+    data["Baseline_Pressure"] = data["Baseline_Pressure"].replace(0, overall_pressure if overall_pressure > 0 else 1.0)
 
-    # Contextual features (hour of day, weekend flag) reduce false positives
-    # by letting the model judge a reading against the right kind of time period,
-    # not just the dataset-wide average.
-    feature_cols = ["Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Encoded", "Hour", "Is_Weekend"]
-    X = data[feature_cols].copy()
+    flow_ratio = data["Flow_Rate_LPM"] / data["Baseline_Flow"]
+    abs_excess = data["Flow_Rate_LPM"] - data["Baseline_Flow"]
+    pressure_drop_ratio = ((data["Baseline_Pressure"] - data["Avg_Pressure_PSI"]) / data["Baseline_Pressure"]).clip(lower=0)
 
-    model = IsolationForest(contamination=sensitivity, n_estimators=150, random_state=42)
-    model.fit(X)
-    data["Anomaly_Signal"] = model.predict(X)
+    # --- Fixed rule-based detection (deterministic, no probabilistic tuning) ---
+    base_flag = (flow_ratio >= PCT_THRESHOLD) | (abs_excess >= ABS_THRESHOLD_LPM)
 
-    # Confidence: how unusual each reading is, scaled to 0-100%.
-    raw_scores = model.decision_function(X)  # higher = more normal
-    lo, hi = raw_scores.min(), raw_scores.max()
-    if hi - lo > 1e-9:
-        data["Confidence"] = ((hi - raw_scores) / (hi - lo) * 100).round(1)
-    else:
-        data["Confidence"] = 0.0
+    # Context-aware dampening: expected high-use periods are held to a stricter,
+    # still-fixed threshold rather than being filtered out altogether.
+    dampen_mask = pd.Series(False, index=data.index)
+    if dampen_event_day:
+        dampen_mask |= data["Occupancy_Status"].isin(["Class_Hours", "After_Hours"])
+    if data["In_Event_Window"].any():
+        dampen_mask |= data["In_Event_Window"]
 
-    # --- False-positive guard ---
-    # IsolationForest's `contamination` setting always flags that fixed share of
-    # readings as outliers, even on a day with zero real leaks — it just picks the
-    # most-extreme-looking normal reading. We confirm each statistical flag against
-    # a real-world deviation check before treating it as a genuine leak signal: it
-    # must be meaningfully above the school's normal flow for that kind of period,
-    # not just the most unusual point in an otherwise quiet dataset.
-    CONFIRM_RATIO = 1.3       # at least 30% above normal flow, OR
-    CONFIRM_ABS_LPM = 4.0     # at least 4 L/min above normal flow
-    normal_flow_baseline = data.loc[data["Anomaly_Signal"] == 1, "Flow_Rate_LPM"].median()
-    if pd.isna(normal_flow_baseline) or normal_flow_baseline <= 0:
-        normal_flow_baseline = data["Flow_Rate_LPM"].median()
-    ratio = data["Flow_Rate_LPM"] / max(normal_flow_baseline, 0.01)
-    abs_diff = data["Flow_Rate_LPM"] - normal_flow_baseline
-    meaningfully_elevated = (ratio >= CONFIRM_RATIO) | (abs_diff >= CONFIRM_ABS_LPM)
-    unconfirmed = (data["Anomaly_Signal"] == -1) & (~meaningfully_elevated)
-    data.loc[unconfirmed, "Anomaly_Signal"] = 1
+    strict_flag = (flow_ratio >= EVENT_PCT_THRESHOLD) | (abs_excess >= EVENT_ABS_THRESHOLD_LPM)
+    data["Leak_Flag"] = np.where(dampen_mask, strict_flag, base_flag)
 
-    # Event-day filter: on flagged event days, don't treat moderately elevated
-    # daytime usage as a leak — only flag readings well above normal even for an event.
-    if dampen_event_day or data["In_Event_Window"].any():
-        normal_flow_ref = data.loc[data["Anomaly_Signal"] == 1, "Flow_Rate_LPM"].median()
-        if pd.isna(normal_flow_ref):
-            normal_flow_ref = data["Flow_Rate_LPM"].median()
-        event_ceiling = normal_flow_ref * 1.8
-        daytime = data["Occupancy_Status"].isin(["Class_Hours", "After_Hours"])
-        soften = (data["Anomaly_Signal"] == -1) & daytime & (data["Flow_Rate_LPM"] < event_ceiling)
-        if data["In_Event_Window"].any():
-            soften &= data["In_Event_Window"]
-        data.loc[soften, "Anomaly_Signal"] = 1
+    # Deterministic confidence score: how far the reading exceeds the fixed
+    # threshold, plus whether the pressure drop corroborates it physically.
+    # This is a transparent, rule-based score — not a model probability.
+    flow_excess_norm = (flow_ratio - 1.0).clip(lower=0)
+    flow_score = (flow_excess_norm * 100).clip(upper=70)
+    pressure_score = (pressure_drop_ratio * 150).clip(upper=30)
+    data["Confidence"] = (flow_score + pressure_score).clip(lower=45, upper=100).round(1)
+    data["Pressure_Drop_Pct"] = (pressure_drop_ratio * 100).round(1)
+    data["Deviation_Pct"] = ((flow_ratio - 1.0) * 100).round(1)
 
-    anomalies = data[data["Anomaly_Signal"] == -1]
+    anomalies = data[data["Leak_Flag"]]
     has_leak = len(anomalies) > 0
 
     metrics = {
@@ -386,15 +383,12 @@ def evaluate_telemetry(data, sensitivity, dampen_event_day=False, event_start=No
     }
 
     if has_leak:
-        normal_df = data[data["Anomaly_Signal"] == 1]
-        normal_median = normal_df["Flow_Rate_LPM"].median()
-        if pd.isna(normal_median):
-            normal_median = data["Flow_Rate_LPM"].median()
-
         top_row = anomalies.loc[anomalies["Flow_Rate_LPM"].idxmax()]
         max_anomaly = top_row["Flow_Rate_LPM"]
+        baseline_flow_for_row = top_row["Baseline_Flow"]
+        baseline_pressure_for_row = top_row["Baseline_Pressure"]
 
-        leak_lpm = round(max_anomaly - normal_median, 1)
+        leak_lpm = round(max_anomaly - baseline_flow_for_row, 1)
         if leak_lpm <= 0:
             leak_lpm = round(max_anomaly * 0.5, 1)
 
@@ -405,8 +399,6 @@ def evaluate_telemetry(data, sensitivity, dampen_event_day=False, event_start=No
         area_m2 = flow_m3_s / (DISCHARGE_COEFF * max(velocity, 0.01))
         diameter_mm = round((2 * np.sqrt(area_m2 / np.pi)) * 1000, 2)
 
-        base_flow, base_pressure = get_baseline_for_row(normal_df, top_row)
-
         metrics.update({
             "leak_lpm": leak_lpm,
             "diameter_mm": diameter_mm,
@@ -414,9 +406,11 @@ def evaluate_telemetry(data, sensitivity, dampen_event_day=False, event_start=No
             "total_liters": round(anomalies["Flow_Rate_LPM"].sum(), 1),
             "students_count": int(anomalies["Flow_Rate_LPM"].sum() / DAILY_DRINKING_LITERS_PER_STUDENT),
             "top_row": top_row,
-            "base_flow": base_flow,
-            "base_pressure": base_pressure,
+            "base_flow": round(baseline_flow_for_row, 1),
+            "base_pressure": round(baseline_pressure_for_row, 1),
             "confidence": top_row["Confidence"],
+            "deviation_pct": top_row["Deviation_Pct"],
+            "pressure_drop_pct": top_row["Pressure_Drop_Pct"],
         })
 
         if leak_lpm < 12:
@@ -427,6 +421,53 @@ def evaluate_telemetry(data, sensitivity, dampen_event_day=False, event_start=No
             metrics["metaphor"] = "a broken pipe releasing water under pressure"
 
     return metrics
+
+
+def build_recommendations(res):
+    """Rule-based recommendation engine: always returns exactly 3 prioritized
+    actions (critical / important / preventive), each with an action, reason,
+    likely location, fix, and the rule that set its priority."""
+    diameter = res["diameter_mm"]
+    large_leak = diameter > LARGE_LEAK_DIAMETER_MM
+
+    if large_leak:
+        priority_1 = {
+            "tag": "Priority 1 — Critical", "tag_class": "high",
+            "title": "Shut off the main water valve and call a licensed plumber",
+            "reason": "Flow this high, combined with a pressure drop at the same time, points to a broken pipe or major fitting failure rather than a single fixture.",
+            "location": "Main supply line or underground pipe network near the affected meter.",
+            "fix": "A plumber needs to locate and repair the ruptured section; shutting the main valve stops the loss until the repair is scheduled.",
+            "why_priority": f"The estimated opening size (Ø {diameter} mm) and the size of the flow spike mean this keeps wasting large volumes of water every hour it runs.",
+        }
+    else:
+        priority_1 = {
+            "tag": "Priority 1 — Critical", "tag_class": "high",
+            "title": "Send a maintenance technician to inspect nearby restrooms and fixtures",
+            "reason": "The flow jumped once and then held steady at a high level, which matches a stuck valve or a running toilet rather than a structural failure.",
+            "location": "Restroom fixtures (toilet flush valve, urinal sensor, or sink faucet) closest to the flagged meter.",
+            "fix": "Replace or adjust the stuck flapper/valve, or tighten a faucet that isn't shutting off completely.",
+            "why_priority": "This is the most likely source of the flagged flow and is usually a quick, low-cost fix once located.",
+        }
+
+    priority_2 = {
+        "tag": "Priority 2 — Important", "tag_class": "medium",
+        "title": "Isolate the affected zone while the repair is scheduled",
+        "reason": "Closing the nearest branch valve narrows the search and limits water loss without shutting off water to the whole school.",
+        "location": "Branch shutoff valve serving the zone or wing closest to the flagged meter.",
+        "fix": "Close the zone valve, then re-check the flow reading — if it drops back to baseline, the leak is confirmed to be in that zone.",
+        "why_priority": "This doesn't fix the root cause, but it stops ongoing waste and helps the technician find the leak faster once they arrive.",
+    }
+
+    priority_3 = {
+        "tag": "Priority 3 — Preventive", "tag_class": "low",
+        "title": "Check outdoor irrigation and HVAC/mechanical equipment",
+        "reason": "Some flagged readings occurred outside normal occupancy hours, which points to automated equipment rather than people using water.",
+        "location": "Irrigation controller valves or the HVAC cooling system's water makeup valve.",
+        "fix": "Inspect solenoid valves and makeup-water controls for a stuck-open condition; recalibrate or replace as needed.",
+        "why_priority": "This isn't necessarily today's leak, but stuck irrigation or HVAC valves are a common, recurring source of school water waste worth ruling out.",
+    }
+
+    return [priority_1, priority_2, priority_3]
 
 
 def generate_demo_row(hour, baseline_flow, inject_leak=False):
@@ -486,29 +527,29 @@ elif mode == "Run a live demo (simulated)":
 if target_df is not None:
     res = evaluate_telemetry(
         target_df,
-        ai_sensitivity,
         dampen_event_day=flag_event_day,
         event_start=event_start,
         event_end=event_end,
     )
+    recs = build_recommendations(res) if res["has_leak"] else []
 
     if not res["time_parsed"]:
         st.caption("Note: we couldn't read dates/times from the Timestamp column, so time-of-day context wasn't used in this analysis.")
 
-    # ---- Status banner ----
+    # ---- Status banner (always binary: Leak Detected / No Leak Detected) ----
     if res["has_leak"]:
         sev_label, _ = severity_level(res["leak_lpm"])
         st.markdown(f"""
         <div class="status-banner critical">
-            <div class="status-headline">⚠️ Possible leak detected — {sev_label} severity</div>
-            <div class="status-sub">The AI found a water-use pattern that doesn't match this school's normal routine. Review the details below before taking action.</div>
+            <div class="status-headline">🚨 Leak Detected — {sev_label} severity</div>
+            <div class="status-sub">A water-use pattern crossed the system's fixed baseline thresholds for this time period. Review the details below before taking action.</div>
         </div>
         """, unsafe_allow_html=True)
     else:
         st.markdown("""
         <div class="status-banner ok">
-            <div class="status-headline">✅ No leak detected</div>
-            <div class="status-sub">Water use across the readings we checked matches the school's normal patterns.</div>
+            <div class="status-headline">✅ No Leak Detected</div>
+            <div class="status-sub">Water use across the readings we checked stayed within the school's fixed statistical baseline.</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -520,7 +561,7 @@ if target_df is not None:
         with c1:
             st.markdown(f"""<div class="answer-card accent-critical">
                 <div class="label">Leak status</div><div class="value">Detected</div>
-                <div class="footnote">{res['confidence']:.0f}% AI confidence</div></div>""", unsafe_allow_html=True)
+                <div class="footnote">{res['confidence']:.0f}% detection confidence</div></div>""", unsafe_allow_html=True)
         with c2:
             st.markdown(f"""<div class="answer-card accent-{sev_class}">
                 <div class="label">Severity</div><div class="value">{sev_label}</div>
@@ -534,10 +575,10 @@ if target_df is not None:
                 <div class="label">Environmental impact</div><div class="value">{sig_label}</div>
                 <div class="footnote">Drinking water for {res['students_count']} students lost</div></div>""", unsafe_allow_html=True)
         with c5:
-            quick_action = "Shut off main valve & call a plumber" if res["diameter_mm"] > 15.0 else "Send maintenance to check fixtures"
+            quick_action = recs[0]["title"] if recs else "No action needed"
             st.markdown(f"""<div class="answer-card accent-ok">
-                <div class="label">Recommended action</div><div class="value" style="font-size:1.05rem;">{quick_action}</div>
-                <div class="footnote">See full reasoning below</div></div>""", unsafe_allow_html=True)
+                <div class="label">Priority 1 action</div><div class="value" style="font-size:1.05rem;">{quick_action}</div>
+                <div class="footnote">See all 3 recommended actions below</div></div>""", unsafe_allow_html=True)
     else:
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -584,7 +625,7 @@ if target_df is not None:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Each dot marks a reading the AI flagged as different from this school's normal pattern for that time of day.")
+        st.caption("Each dot marks a reading that crossed the system's fixed baseline threshold for that time of day.")
 
     # ---- TAB 2: Why + What to do ----
     with tab2:
@@ -593,57 +634,50 @@ if target_df is not None:
 
             st.markdown(f"""
             <div class="why-card">
-                <span class="confidence-tag">{res['confidence']:.0f}% AI confidence</span>
-                <div class="why-title">Why the AI flagged this</div>
+                <span class="confidence-tag">{res['confidence']:.0f}% detection confidence</span>
+                <div class="why-title">Why the system flagged this</div>
                 <div class="why-compare">
-                    <div class="pair">Normal flow: <b>{res['base_flow']} L/min</b> → Current flow: <b>{top_row['Flow_Rate_LPM']} L/min</b></div>
-                    <div class="pair">Normal pressure: <b>{res['base_pressure']} PSI</b> → Current pressure: <b>{top_row['Avg_Pressure_PSI']} PSI</b></div>
+                    <div class="pair">Baseline flow: <b>{res['base_flow']} L/min</b> → Current flow: <b>{top_row['Flow_Rate_LPM']} L/min</b> ({res['deviation_pct']:.0f}% above baseline)</div>
+                    <div class="pair">Baseline pressure: <b>{res['base_pressure']} PSI</b> → Current pressure: <b>{top_row['Avg_Pressure_PSI']} PSI</b> ({res['pressure_drop_pct']:.0f}% drop)</div>
                 </div>
-                <div class="why-reason">The AI noticed flow well above what's normal for this time of day, paired with a pressure drop — together, this combination usually means water is escaping somewhere in the system rather than being used normally.</div>
+                <div class="why-reason">This reading crossed the system's fixed detection rule — flow at least 30% above the statistical baseline for this time period, or at least 4 L/min above it. Rising flow paired with falling pressure is the same physical signature as water escaping through an unintended opening: when a fixture is used normally, flow and pressure tend to move together, but a leak pulls flow up while pressure drops.</div>
                 <span class="why-evidence">To put it in perspective: this is roughly the same rate as {res['metaphor']}.</span>
             </div>
             """, unsafe_allow_html=True)
 
             st.markdown("##### What to do next")
-
-            if res["diameter_mm"] > 15.0:
+            for rec in recs:
                 st.markdown(f"""
-                <div class="action-card priority-high">
-                    <span class="action-tag high">High priority</span>
-                    <div class="action-title">Shut off the main water valve and call a plumber</div>
-                    <div class="action-row"><b>Why:</b> A leak of this size points to a broken pipe or major fitting failure, not a single sink or toilet — flow this high doesn't come from one fixture.</div>
-                    <div class="action-row"><b>Evidence:</b> The estimated opening size is about Ø {res['diameter_mm']} mm, and pressure dropped at the same time flow spiked — a classic sign of a structural leak.</div>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div class="action-card priority-high">
-                    <span class="action-tag high">High priority</span>
-                    <div class="action-title">Send maintenance to check nearby restrooms and fixtures</div>
-                    <div class="action-row"><b>Why:</b> This pattern matches a stuck valve or a running toilet — a common, easily-fixed issue rather than a structural problem.</div>
-                    <div class="action-row"><b>Evidence:</b> Flow jumped once and then stayed steady at a high level, instead of spiking unpredictably the way a burst pipe would.</div>
+                <div class="action-card priority-{rec['tag_class']}">
+                    <span class="action-tag {rec['tag_class']}">{rec['tag']}</span>
+                    <div class="action-title">{rec['title']}</div>
+                    <div class="action-row"><b>Reason:</b> {rec['reason']}</div>
+                    <div class="action-row"><b>Likely location:</b> {rec['location']}</div>
+                    <div class="action-row"><b>How to fix:</b> {rec['fix']}</div>
+                    <div class="action-row"><b>Why this priority:</b> {rec['why_priority']}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-            st.markdown("""
-            <div class="action-card priority-medium">
-                <span class="action-tag medium">Worth checking</span>
-                <div class="action-title">Have someone check outdoor irrigation or mechanical equipment (e.g. HVAC cooling system)</div>
-                <div class="action-row"><b>Why:</b> Some of the unusual readings happened during hours when no students or staff are normally in the building, which points to automated equipment rather than people using water.</div>
-                <div class="action-row"><b>Evidence:</b> These readings don't line up with the school's typical daytime usage schedule.</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # ---- Environmental impact ----
-            monthly_liters = round(res["leak_lpm"] * 60 * 24 * 30)
-            annual_cost = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24 * 365)
+            # ---- Impact engine: water loss & cost across time horizons ----
+            liters_per_hour = round(res["leak_lpm"] * 60)
+            liters_per_day = round(res["leak_lpm"] * 60 * 24)
+            liters_per_month = round(res["leak_lpm"] * 60 * 24 * 30)
+            liters_per_year = round(res["leak_lpm"] * 60 * 24 * 365)
+            cost_per_day = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24, 2)
+            cost_per_month = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24 * 30)
+            cost_per_year = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24 * 365)
             sig_label = significance_level(res["total_liters"])
             st.markdown(f"""
             <div class="env-card">
-                <h4>🌍 Environmental impact</h4>
+                <h4>🌍 Environmental & financial impact</h4>
                 <div class="env-stat"><div class="num">{res['students_count']}</div><div class="lbl">students' daily drinking water lost so far</div></div>
-                <div class="env-stat"><div class="num">{monthly_liters:,} L</div><div class="lbl">estimated waste per month if left unfixed</div></div>
-                <div class="env-stat"><div class="num">${annual_cost:,}</div><div class="lbl">estimated yearly cost if ignored</div></div>
+                <div class="env-stat"><div class="num">{liters_per_hour:,} L</div><div class="lbl">lost per hour if left unfixed</div></div>
+                <div class="env-stat"><div class="num">{liters_per_day:,} L</div><div class="lbl">lost per day if left unfixed</div></div>
+                <div class="env-stat"><div class="num">{liters_per_month:,} L</div><div class="lbl">lost per month if left unfixed</div></div>
+                <div class="env-stat"><div class="num">{liters_per_year:,} L</div><div class="lbl">lost per year if left unfixed</div></div>
+                <div class="env-stat"><div class="num">${cost_per_day:,}</div><div class="lbl">cost per day if ignored</div></div>
+                <div class="env-stat"><div class="num">${cost_per_month:,}</div><div class="lbl">cost per month if ignored</div></div>
+                <div class="env-stat"><div class="num">${cost_per_year:,}</div><div class="lbl">cost per year if ignored</div></div>
                 <div class="env-stat"><div class="num">{sig_label}</div><div class="lbl">environmental significance level</div></div>
             </div>
             """, unsafe_allow_html=True)
@@ -651,7 +685,7 @@ if target_df is not None:
             st.markdown("""
             <div class="action-card" style="border-left:4px solid #3F8F5F;">
                 <div class="action-title">No action needed right now</div>
-                <div class="action-row">Water use matches the school's normal pattern. We'll keep watching and let you know if anything changes.</div>
+                <div class="action-row">Water use stayed within the school's fixed baseline. We'll keep watching and let you know if anything changes.</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -661,9 +695,9 @@ if target_df is not None:
 st.markdown("""
     <div class="rai-card">
         <h4>⚖️ What this decision-support system can and can't do</h4>
-        <div class="rai-item"><b>Confidence, not certainty.</b> The percentage shown reflects how unusual a reading looks compared to this school's normal pattern — it's an estimate, not a guarantee.</div>
+        <div class="rai-item"><b>A calculated score, not a guess.</b> The confidence percentage reflects how far a reading exceeds the school's fixed statistical baseline, combined with whether pressure behavior corroborates it. It comes from fixed rules and physics, not a machine-learning prediction.</div>
         <div class="rai-item"><b>A person always decides.</b> This system never shuts off water or contacts anyone automatically. Every alert needs a maintenance team member to review it and choose what to do — shutting off water during school hours can create its own safety and sanitation risks.</div>
-        <div class="rai-item"><b>Known limitation.</b> Unusual but legitimate events — an assembly, a fire drill, extra cleaning — can occasionally look like a leak. Marking "planned event" in the sidebar helps the AI tell the difference.</div>
-        <div class="rai-item"><b>How this prototype was validated.</b> This version learns and checks patterns using the same uploaded file, since no historical school data was available for testing. In a real deployment, the system would first learn a school's normal patterns over several weeks of real sensor data, then watch new incoming readings separately — flagging anything that doesn't fit for the maintenance team to review.</div>
+        <div class="rai-item"><b>Known limitation.</b> Unusual but legitimate events — an assembly, a fire drill, extra cleaning — can occasionally cross the same thresholds as a leak. Marking "planned event" in the sidebar raises the threshold for that period so normal activity isn't flagged.</div>
+        <div class="rai-item"><b>How this prototype was validated.</b> This version calculates its baseline directly from the uploaded file, since no historical school data was available for testing. In a real deployment, the system would first establish a school's normal baseline using several weeks of real sensor data, then compare new incoming readings against that fixed baseline — flagging anything that crosses the defined thresholds for the maintenance team to review.</div>
     </div>
     """, unsafe_allow_html=True)
