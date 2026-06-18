@@ -9,15 +9,15 @@ import time
 # PAGE CONFIG
 # =============================================================================
 st.set_page_config(
-    page_title="HydroSentinel AI — School Water Monitoring",
+    page_title="HydroSentinel — Water Infrastructure Decision Support for Schools",
     page_icon="💧",
     layout="wide",
 )
 
 # =============================================================================
 # DESIGN SYSTEM
-# A calm, trustworthy "field report" look for an environmental tool school
-# staff will actually use — not a security-ops or hacker dashboard.
+# A calm, trustworthy "field report" look for a decision-support tool that
+# school maintenance teams will actually use — not a security-ops or hacker dashboard.
 # =============================================================================
 st.markdown("""
     <style>
@@ -172,7 +172,7 @@ REQUIRED_COLUMNS = ["Timestamp", "Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy
 with st.sidebar:
     st.markdown(
         "<div class='serif' style='font-size:1.4rem; font-weight:700; color:#146C5F; margin-bottom:0;'>💧 HydroSentinel AI</div>"
-        "<div style='color:#4B5D59; font-size:0.85rem; margin-bottom:16px;'>School Water Monitoring</div>",
+        "<div style='color:#4B5D59; font-size:0.85rem; margin-bottom:16px;'>Water Infrastructure Decision Support</div>",
         unsafe_allow_html=True,
     )
     st.caption("USAII Global AI Hackathon 2026")
@@ -234,7 +234,8 @@ with st.sidebar:
 # =============================================================================
 st.markdown('<div class="app-title">HydroSentinel AI</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="app-subtitle">Helping schools catch hidden water leaks before they waste water, money, and the environment.</div>',
+    '<div class="app-subtitle">A real-world decision-support system for school water infrastructure — '
+    'helping maintenance teams catch hidden leaks early, understand why they happened, and decide what to do next.</div>',
     unsafe_allow_html=True,
 )
 
@@ -252,9 +253,12 @@ st.markdown("""
 
 st.markdown("""
     <div class="context-note">
-        <b>About this prototype:</b> This demo reads water-use data from a CSV file (or a simulated live demo) to stand in for
-        real sensor hardware, which wasn't available to test during development. In a real school deployment, HydroSentinel AI
-        would connect directly to smart water meters and pressure sensors and watch them continuously, day and night.
+        <b>About this system:</b> HydroSentinel AI is a decision-support system for school water infrastructure,
+        built to give maintenance teams the evidence and reasoning they need to act on leaks quickly and confidently —
+        not just a statistical anomaly flag. This version reads water-use data from a CSV file (or a simulated live demo)
+        to stand in for direct sensor integration, which wasn't available to test during development. In a real school
+        deployment, HydroSentinel AI would connect directly to smart water meters and pressure sensors, watching them
+        continuously day and night to support the maintenance team's day-to-day decisions.
     </div>
     """, unsafe_allow_html=True)
 
@@ -656,10 +660,10 @@ if target_df is not None:
 # =============================================================================
 st.markdown("""
     <div class="rai-card">
-        <h4>⚖️ What this AI can and can't do</h4>
+        <h4>⚖️ What this decision-support system can and can't do</h4>
         <div class="rai-item"><b>Confidence, not certainty.</b> The percentage shown reflects how unusual a reading looks compared to this school's normal pattern — it's an estimate, not a guarantee.</div>
-        <div class="rai-item"><b>A person always decides.</b> This system never shuts off water or contacts anyone automatically. Every alert needs a staff member to review it and choose what to do — shutting off water during school hours can create its own safety and sanitation risks.</div>
+        <div class="rai-item"><b>A person always decides.</b> This system never shuts off water or contacts anyone automatically. Every alert needs a maintenance team member to review it and choose what to do — shutting off water during school hours can create its own safety and sanitation risks.</div>
         <div class="rai-item"><b>Known limitation.</b> Unusual but legitimate events — an assembly, a fire drill, extra cleaning — can occasionally look like a leak. Marking "planned event" in the sidebar helps the AI tell the difference.</div>
-        <div class="rai-item"><b>How this demo was tested.</b> This prototype learns and checks patterns using the same uploaded file, since no historical school data was available. In a real deployment, the AI would first learn a school's normal patterns over several weeks of real sensor data, then watch new incoming readings separately for anything that doesn't fit.</div>
+        <div class="rai-item"><b>How this prototype was validated.</b> This version learns and checks patterns using the same uploaded file, since no historical school data was available for testing. In a real deployment, the system would first learn a school's normal patterns over several weeks of real sensor data, then watch new incoming readings separately — flagging anything that doesn't fit for the maintenance team to review.</div>
     </div>
     """, unsafe_allow_html=True)
