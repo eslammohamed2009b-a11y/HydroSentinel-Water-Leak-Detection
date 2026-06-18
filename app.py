@@ -187,7 +187,8 @@ LARGE_LEAK_DIAMETER_MM = 15.0    # above this estimated opening size, treat as a
 sample_files = {
     "no_leak": ["no_leak.csv", "./no_leak.csv", "../no_leak.csv"],
     "leak_normal": ["leak_normal.csv", "./leak_normal.csv", "../leak_normal.csv"],
-    "leak_event": ["leak_event.csv", "./leak_event.csv", "../leak_event.csv"]
+    "leak_event": ["leak_event.csv", "./leak_event.csv", "../leak_event.csv"],
+    "example_normal_day": ["example_normal_day_2026-10-05.csv", "./example_normal_day_2026-10-05.csv", "../example_normal_day_2026-10-05.csv"]
 }
 
 def find_sample_file(filename_options):
@@ -221,6 +222,14 @@ with st.sidebar:
                 st.download_button("🚨 Leak Data (Event)", f, "leak_event.csv")
         else:
             st.warning("Leak Event Data file not found in project")
+        
+        # Example normal day CSV (added by contextual rules work)
+        example_file = find_sample_file(sample_files["example_normal_day"])
+        if example_file:
+            with open(example_file, "rb") as f:
+                st.download_button("📥 Example Normal Day (2026-10-05)", f, "example_normal_day_2026-10-05.csv")
+        else:
+            st.info("Example Normal Day file not found in project")
     except Exception as e:
         st.warning(f"Error loading sample files: {str(e)}")
 
