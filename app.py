@@ -180,6 +180,16 @@ LARGE_LEAK_DIAMETER_MM = 15.0    # above this estimated opening size, treat as a
 # SIDEBAR — DATA INPUT & DETECTION CONTEXT
 # =============================================================================
 with st.sidebar:
+    st.subheader("📥 Download Samples")
+    try:
+        with open("no_leak.csv", "rb") as f:
+            st.download_button("📥 No Leak Data", f, "no_leak.csv")
+        with open("leak_normal.csv", "rb") as f:
+            st.download_button("⚠️ Leak Data", f, "leak_normal.csv")
+    except FileNotFoundError:
+        st.warning("Sample files missing.")
+
+    st.markdown("---")
     st.markdown(
         "<div class='serif' style='font-size:1.4rem; font-weight:700; color:#146C5F; margin-bottom:0;'>💧 HydroSentinel AI</div>"
         "<div style='color:#4B5D59; font-size:0.85rem; margin-bottom:16px;'>Water Infrastructure Decision Support</div>",
