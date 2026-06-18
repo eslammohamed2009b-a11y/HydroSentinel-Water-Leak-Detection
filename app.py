@@ -3,8 +3,17 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import time
-import os
+import hashlib
 from pathlib import Path
+from ml_engine import (
+    REQUIRED_COLUMNS,
+    WATER_COST_PER_LITER,
+    ensure_model,
+    evaluate_telemetry,
+    find_sample_file,
+    load_default_training_data,
+    validate_and_clean_data,
+)
 
 # =============================================================================
 # PAGE CONFIG
@@ -161,21 +170,6 @@ st.markdown("""
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-WATER_COST_PER_LITER = 0.007
-DENSITY_WATER = 1000
-DISCHARGE_COEFF = 0.62
-PSI_TO_PASCAL = 6894.76
-DAILY_DRINKING_LITERS_PER_STUDENT = 2.5
-
-REQUIRED_COLUMNS = ["Timestamp", "Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Status"]
-
-# ---- Deterministic detection thresholds (rule + physics + statistics based) ----
-# No probabilistic tuning knob: these fixed thresholds are the entire detection logic.
-PCT_THRESHOLD = 1.30             # flow must be at least 30% above baseline to flag
-ABS_THRESHOLD_LPM = 4.0          # OR at least 4 L/min above baseline to flag
-EVENT_PCT_THRESHOLD = 1.80       # stricter threshold during an expected high-use period
-EVENT_ABS_THRESHOLD_LPM = 8.0    # stricter absolute threshold during an expected high-use period
-BASELINE_PERCENTILE = 0.40       # lower-than-median percentile, robust to a few elevated leak readings
 LARGE_LEAK_DIAMETER_MM = 15.0    # above this estimated opening size, treat as a structural leak
 
 # =============================================================================
@@ -186,19 +180,14 @@ LARGE_LEAK_DIAMETER_MM = 15.0    # above this estimated opening size, treat as a
 # Use the app file location so Streamlit Cloud and local execution both find the CSVs.
 app_dir = Path(__file__).resolve().parent
 sample_files = {
-    "normal": [app_dir / "normal.csv"],
+    "normal": [app_dir / "normal.csv", app_dir / "example_normal_day_2026-10-05.csv"],
     "leak": [app_dir / "leak.csv"],
     "event": [app_dir / "event.csv"],
     "event_leak": [app_dir / "event_leak.csv"]
 }
-
-def find_sample_file(filename_options):
-    """Find sample file in multiple possible locations."""
-    for filename in filename_options:
-        path = Path(filename)
-        if path.exists():
-            return path
-    return None
+MODEL_PATH = app_dir / "hydrosentinel_isolation_forest.joblib"
+FEEDBACK_PATH = app_dir / "feedback.csv"
+LOGS_PATH = app_dir / "logs.csv"
 
 with st.sidebar:
     st.subheader("📥 Download Samples")
@@ -244,6 +233,14 @@ with st.sidebar:
     st.markdown("---")
 
     st.subheader("📥 Your Data")
+    training_file = st.file_uploader(
+        "Upload normal-day training readings",
+        type=["csv"],
+        key="training_file",
+        help="Use clean no-leak data. If you have event-day readings without leaks, include them too so the model learns that those patterns are still normal.",
+    )
+    st.caption("If you skip this, HydroSentinel trains from the bundled normal-day and event-day no-leak samples.")
+
     mode = st.radio(
         "How should we get sensor readings?",
         ["Upload a CSV file", "Run a live demo (simulated)"],
@@ -260,29 +257,8 @@ with st.sidebar:
         stream_trigger = st.button("▶ Run live demo")
 
     st.markdown("---")
-    st.subheader("⚙️ Detection Context")
-    st.caption("HydroSentinel uses fixed statistical and physical thresholds — there's no sensitivity dial to tune. These two settings only give the system extra context about expected high water use.")
-    flag_event_day = st.checkbox(
-        "Today includes a planned event (assembly, sports day, deep cleaning)",
-        help="Expected high water use on event days can look like a leak. Checking this raises the detection threshold for daytime readings so normal event activity isn't flagged.",
-    )
-    event_window_enabled = st.checkbox(
-        "Enable a specific event window",
-        help="Use a time window when planned activity is expected. Readings inside this window are held to a stricter, fixed threshold before being flagged as a leak.",
-    )
-    event_start = None
-    event_end = None
-    if event_window_enabled:
-        event_start = st.datetime_input(
-            "Event start",
-            value=pd.Timestamp.now().floor("min").to_pydatetime(),
-            help="Select when the planned event begins.",
-        )
-        event_end = st.datetime_input(
-            "Event end",
-            value=(pd.Timestamp.now() + pd.Timedelta(hours=2)).floor("min").to_pydatetime(),
-            help="Select when the planned event ends.",
-        )
+    st.subheader("🤖 Detection Model")
+    st.caption("HydroSentinel trains an IsolationForest model on normal-day readings, then assigns an anomaly score and leak probability to every new row.")
 
     st.markdown("---")
     st.markdown(
@@ -316,8 +292,8 @@ st.markdown("""
 st.markdown("""
     <div class="context-note">
         <b>About this system:</b> HydroSentinel AI is a decision-support system for school water infrastructure,
-        built to give maintenance teams clear, auditable evidence for acting on leaks — using fixed statistical
-        baselines and physical flow-pressure rules, not a black-box model. This version reads water-use data from
+        built to give maintenance teams clear, auditable evidence for acting on leaks by learning the normal
+        relationship between flow, pressure, and occupancy from normal-day data with an IsolationForest model. This version reads water-use data from
         a CSV file (or a simulated live demo) to stand in for direct sensor integration, which wasn't available to
         test during development. In a real school deployment, HydroSentinel AI would connect directly to smart water
         meters and pressure sensors, watching them continuously day and night to support the maintenance team's
@@ -329,22 +305,145 @@ st.markdown("""
 # =============================================================================
 # HELPERS
 # =============================================================================
-def add_time_features(df):
-    """Pulls Hour and Day Type out of the timestamp for context and reporting."""
-    df = df.copy()
-    try:
-        dt = pd.to_datetime(df["Timestamp"])
-        df["Hour"] = dt.dt.hour
-        df["Is_Weekend"] = (dt.dt.dayofweek >= 5).astype(int)
-        df["_time_parsed"] = True
-    except Exception:
-        df["Hour"] = 0
-        df["Is_Weekend"] = 0
-        df["_time_parsed"] = False
-    return df
+def build_analysis_id(df):
+    """Build a stable identifier for one analysis run.
+
+    Args:
+        df: Clean input telemetry DataFrame.
+
+    Returns:
+        A short hash string used to deduplicate log entries.
+    """
+    signature_df = df[REQUIRED_COLUMNS].copy()
+    signature_df["Timestamp"] = signature_df["Timestamp"].astype(str)
+    digest = hashlib.sha256(signature_df.to_csv(index=False).encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def append_record(path, record, unique_key=None):
+    """Append one record to a CSV file with optional deduplication.
+
+    Args:
+        path: Destination CSV path.
+        record: Dictionary to serialize as one CSV row.
+        unique_key: Optional column name used to prevent duplicate writes.
+
+    Returns:
+        True when a row is written, otherwise False if deduplicated.
+    """
+    record_df = pd.DataFrame([record])
+    if path.exists():
+        if unique_key is not None:
+            existing = pd.read_csv(path)
+            if unique_key in existing.columns and str(record[unique_key]) in existing[unique_key].astype(str).values:
+                return False
+        record_df.to_csv(path, mode="a", header=False, index=False)
+        return True
+
+    record_df.to_csv(path, index=False)
+    return True
+
+
+def log_analysis_result(analysis_id, result, training_summary, target_summary):
+    """Persist one analysis summary row to logs.csv.
+
+    Args:
+        analysis_id: Stable identifier for the analyzed dataset.
+        result: Metrics dictionary returned by the ML engine.
+        training_summary: Validation summary for the training dataset.
+        target_summary: Validation summary for the analyzed dataset.
+
+    Returns:
+        True when a new log row is written, otherwise False.
+    """
+    top_timestamp = ""
+    if result.get("has_leak"):
+        top_timestamp = str(result["top_row"]["Timestamp"])
+
+    log_record = {
+        "logged_at": pd.Timestamp.now().isoformat(),
+        "analysis_id": analysis_id,
+        "has_leak": bool(result["has_leak"]),
+        "anomaly_rows": int(len(result["anomalies"])),
+        "confidence": float(result.get("confidence", 0.0)),
+        "leak_lpm": float(result.get("leak_lpm", 0.0)),
+        "total_liters": float(result.get("total_liters", 0.0)),
+        "top_timestamp": top_timestamp,
+        "training_valid_rows": int(training_summary.get("valid_rows", 0)),
+        "training_invalid_rows": int(training_summary.get("invalid_rows", 0)),
+        "target_valid_rows": int(target_summary.get("valid_rows", 0)),
+        "target_invalid_rows": int(target_summary.get("invalid_rows", 0)),
+    }
+    return append_record(LOGS_PATH, log_record, unique_key="analysis_id")
+
+
+def save_feedback(analysis_id, verdict, result):
+    """Persist one user verdict for an alert into feedback.csv.
+
+    Args:
+        analysis_id: Stable identifier for the analyzed dataset.
+        verdict: User-provided review label such as correct_alert.
+        result: Metrics dictionary returned by the ML engine.
+
+    Returns:
+        True when the feedback row is written.
+    """
+    top_timestamp = ""
+    if result.get("has_leak"):
+        top_timestamp = str(result["top_row"]["Timestamp"])
+
+    feedback_record = {
+        "submitted_at": pd.Timestamp.now().isoformat(),
+        "analysis_id": analysis_id,
+        "feedback": verdict,
+        "predicted_leak": bool(result["has_leak"]),
+        "confidence": float(result.get("confidence", 0.0)),
+        "top_timestamp": top_timestamp,
+    }
+    return append_record(FEEDBACK_PATH, feedback_record)
+
+
+def load_training_dataframe(training_file):
+    """Load and validate the training dataset used by the UI.
+
+    Args:
+        training_file: Optional uploaded training file from Streamlit.
+
+    Returns:
+        A tuple of (training_dataframe, validation_summary).
+    """
+    if training_file is not None:
+        raw_training_df = pd.read_csv(training_file)
+        return validate_and_clean_data(raw_training_df, "training data")
+
+    default_training_df = load_default_training_data([sample_files["normal"], sample_files["event"]])
+    if default_training_df is None:
+        raise FileNotFoundError("No bundled no-leak training samples are available.")
+    return validate_and_clean_data(default_training_df, "default training data")
+
+
+def load_target_dataframe(uploaded_file):
+    """Load and validate an uploaded telemetry file from the UI.
+
+    Args:
+        uploaded_file: Streamlit uploaded file object.
+
+    Returns:
+        A tuple of (target_dataframe, validation_summary).
+    """
+    raw_df = pd.read_csv(uploaded_file)
+    return validate_and_clean_data(raw_df, "uploaded sensor data")
 
 
 def severity_level(leak_lpm):
+    """Map leak intensity to a display severity label.
+
+    Args:
+        leak_lpm: Estimated leak rate in liters per minute.
+
+    Returns:
+        A tuple of (label, css_class).
+    """
     if leak_lpm < 12:
         return "Minor", "warning"
     elif leak_lpm <= 35:
@@ -354,6 +453,14 @@ def severity_level(leak_lpm):
 
 
 def significance_level(total_liters):
+    """Map cumulative water loss to an impact label.
+
+    Args:
+        total_liters: Total anomalous liters observed in the dataset.
+
+    Returns:
+        A human-readable impact tier string.
+    """
     if total_liters < 300:
         return "Low"
     elif total_liters < 1500:
@@ -364,118 +471,20 @@ def significance_level(total_liters):
         return "Severe"
 
 
-def compute_baselines(data):
-    """Computes a fixed statistical baseline flow/pressure per occupancy period.
-    Uses a lower percentile (not the mean/median) so a handful of elevated leak
-    readings can't pull the 'normal' reference upward — a deliberate, auditable
-    statistical choice rather than a tuned model parameter."""
-    flow_baseline = data.groupby("Occupancy_Status")["Flow_Rate_LPM"].quantile(BASELINE_PERCENTILE)
-    pressure_baseline = data.groupby("Occupancy_Status")["Avg_Pressure_PSI"].median()
+def probability_status(probability):
+    """Convert leak probability into a color-coded status label.
 
-    overall_flow = data["Flow_Rate_LPM"].quantile(BASELINE_PERCENTILE)
-    overall_pressure = data["Avg_Pressure_PSI"].median()
+    Args:
+        probability: Maximum leak probability percentage.
 
-    counts = data["Occupancy_Status"].value_counts()
-    for status in flow_baseline.index:
-        if counts.get(status, 0) < 3:
-            flow_baseline[status] = overall_flow
-            pressure_baseline[status] = overall_pressure
-
-    return flow_baseline, pressure_baseline, overall_flow, overall_pressure
-
-
-def evaluate_telemetry(data, dampen_event_day=False, event_start=None, event_end=None):
-    """Deterministic leak detection: fixed statistical baselines + percentage/absolute
-    flow-deviation rules + flow-pressure physics. No probabilistic model, no tunable
-    sensitivity — every flagged reading can be explained with the same fixed rule."""
-    data = add_time_features(data)
-
-    data["In_Event_Window"] = False
-    if event_start and event_end and event_start < event_end:
-        data["In_Event_Window"] = data["Timestamp"].between(event_start, event_end)
-
-    flow_baseline_map, pressure_baseline_map, overall_flow, overall_pressure = compute_baselines(data)
-    data["Baseline_Flow"] = data["Occupancy_Status"].map(flow_baseline_map).fillna(overall_flow)
-    data["Baseline_Pressure"] = data["Occupancy_Status"].map(pressure_baseline_map).fillna(overall_pressure)
-    data["Baseline_Flow"] = data["Baseline_Flow"].replace(0, overall_flow if overall_flow > 0 else 1.0)
-    data["Baseline_Pressure"] = data["Baseline_Pressure"].replace(0, overall_pressure if overall_pressure > 0 else 1.0)
-
-    flow_ratio = data["Flow_Rate_LPM"] / data["Baseline_Flow"]
-    abs_excess = data["Flow_Rate_LPM"] - data["Baseline_Flow"]
-    pressure_drop_ratio = ((data["Baseline_Pressure"] - data["Avg_Pressure_PSI"]) / data["Baseline_Pressure"]).clip(lower=0)
-
-    # --- Fixed rule-based detection (deterministic, no probabilistic tuning) ---
-    base_flag = (flow_ratio >= PCT_THRESHOLD) | (abs_excess >= ABS_THRESHOLD_LPM)
-
-    # Context-aware dampening: expected high-use periods are held to a stricter,
-    # still-fixed threshold rather than being filtered out altogether.
-    dampen_mask = pd.Series(False, index=data.index)
-    if dampen_event_day:
-        dampen_mask |= data["Occupancy_Status"].isin(["Class_Hours", "After_Hours"])
-    if data["In_Event_Window"].any():
-        dampen_mask |= data["In_Event_Window"]
-
-    strict_flag = (flow_ratio >= EVENT_PCT_THRESHOLD) | (abs_excess >= EVENT_ABS_THRESHOLD_LPM)
-    data["Leak_Flag"] = np.where(dampen_mask, strict_flag, base_flag)
-
-    # Deterministic confidence score: how far the reading exceeds the fixed
-    # threshold, plus whether the pressure drop corroborates it physically.
-    # This is a transparent, rule-based score — not a model probability.
-    flow_excess_norm = (flow_ratio - 1.0).clip(lower=0)
-    flow_score = (flow_excess_norm * 100).clip(upper=70)
-    pressure_score = (pressure_drop_ratio * 150).clip(upper=30)
-    data["Confidence"] = (flow_score + pressure_score).clip(lower=45, upper=100).round(1)
-    data["Pressure_Drop_Pct"] = (pressure_drop_ratio * 100).round(1)
-    data["Deviation_Pct"] = ((flow_ratio - 1.0) * 100).round(1)
-
-    anomalies = data[data["Leak_Flag"]]
-    has_leak = len(anomalies) > 0
-
-    metrics = {
-        "has_leak": has_leak, "anomalies": anomalies, "df": data,
-        "leak_lpm": 0.0, "diameter_mm": 0.0, "cost_min": 0.0, "total_liters": 0.0,
-        "metaphor": "No leak detected", "students_count": 0, "time_parsed": bool(data["_time_parsed"].iloc[0]),
-    }
-
-    if has_leak:
-        top_row = anomalies.loc[anomalies["Flow_Rate_LPM"].idxmax()]
-        max_anomaly = top_row["Flow_Rate_LPM"]
-        baseline_flow_for_row = top_row["Baseline_Flow"]
-        baseline_pressure_for_row = top_row["Baseline_Pressure"]
-
-        leak_lpm = round(max_anomaly - baseline_flow_for_row, 1)
-        if leak_lpm <= 0:
-            leak_lpm = round(max_anomaly * 0.5, 1)
-
-        # Estimate leak opening size from flow + pressure (Torricelli's equation)
-        flow_m3_s = (leak_lpm / 1000) / 60
-        press_pascal = max(top_row["Avg_Pressure_PSI"] * PSI_TO_PASCAL, 1.0)
-        velocity = np.sqrt((2 * press_pascal) / DENSITY_WATER)
-        area_m2 = flow_m3_s / (DISCHARGE_COEFF * max(velocity, 0.01))
-        diameter_mm = round((2 * np.sqrt(area_m2 / np.pi)) * 1000, 2)
-
-        metrics.update({
-            "leak_lpm": leak_lpm,
-            "diameter_mm": diameter_mm,
-            "cost_min": round(leak_lpm * WATER_COST_PER_LITER, 2),
-            "total_liters": round(anomalies["Flow_Rate_LPM"].sum(), 1),
-            "students_count": int(anomalies["Flow_Rate_LPM"].sum() / DAILY_DRINKING_LITERS_PER_STUDENT),
-            "top_row": top_row,
-            "base_flow": round(baseline_flow_for_row, 1),
-            "base_pressure": round(baseline_pressure_for_row, 1),
-            "confidence": top_row["Confidence"],
-            "deviation_pct": top_row["Deviation_Pct"],
-            "pressure_drop_pct": top_row["Pressure_Drop_Pct"],
-        })
-
-        if leak_lpm < 12:
-            metrics["metaphor"] = "a faucet left fully running"
-        elif leak_lpm <= 35:
-            metrics["metaphor"] = "a toilet valve stuck open and constantly refilling"
-        else:
-            metrics["metaphor"] = "a broken pipe releasing water under pressure"
-
-    return metrics
+    Returns:
+        A tuple of (status_label, css_color).
+    """
+    if probability < 35:
+        return "Stable", "#3F8F5F"
+    elif probability < 70:
+        return "Needs Review", "#B9791A"
+    return "High Risk", "#B03A2E"
 
 
 def build_recommendations(res):
@@ -526,6 +535,16 @@ def build_recommendations(res):
 
 
 def generate_demo_row(hour, baseline_flow, inject_leak=False):
+    """Generate one simulated telemetry row for the Streamlit live demo.
+
+    Args:
+        hour: Integer hour used in the synthetic timestamp.
+        baseline_flow: Expected baseline flow value.
+        inject_leak: Whether to simulate a leak pattern for this row.
+
+    Returns:
+        A dictionary representing one telemetry row.
+    """
     timestamp = f"2026-06-17 {hour:02d}:00:00"
     status = "Class_Hours" if 8 <= hour <= 15 else "After_Hours"
     if inject_leak and hour >= 12:
@@ -541,19 +560,20 @@ def generate_demo_row(hour, baseline_flow, inject_leak=False):
 # LOAD DATA
 # =============================================================================
 target_df = None
+training_df = None
+training_summary = None
+target_summary = None
+
+try:
+    training_df, training_summary = load_training_dataframe(training_file)
+except Exception as e:
+    st.error(f"We couldn't prepare the training data: {e}")
 
 if mode == "Upload a CSV file" and uploaded_file is not None:
     try:
-        raw_df = pd.read_csv(uploaded_file)
-        if all(col in raw_df.columns for col in REQUIRED_COLUMNS):
-            target_df = raw_df
-        else:
-            st.error(
-                "This file doesn't look like a HydroSentinel data file. It needs these columns: "
-                "Timestamp, Flow_Rate_LPM, Avg_Pressure_PSI, Occupancy_Status."
-            )
+        target_df, target_summary = load_target_dataframe(uploaded_file)
     except Exception as e:
-        st.error(f"We couldn't read that file: {e}")
+        st.error(f"We couldn't prepare the uploaded telemetry: {e}")
 
 elif mode == "Run a live demo (simulated)":
     if "demo_rows" not in st.session_state:
@@ -568,181 +588,247 @@ elif mode == "Run a live demo (simulated)":
         for hour in range(12, 24):
             new_row = generate_demo_row(hour, 15.0, inject_leak=True)
             st.session_state.demo_rows.append(new_row)
-            target_df = pd.DataFrame(st.session_state.demo_rows)
+            try:
+                target_df, target_summary = validate_and_clean_data(pd.DataFrame(st.session_state.demo_rows), "live demo data")
+            except Exception as e:
+                st.error(f"Live demo data became invalid: {e}")
+                target_df = None
+                target_summary = None
+                break
             with placeholder.container():
                 st.info(f"📡 Receiving reading for {new_row['Timestamp']} ...")
             time.sleep(0.15)
         st.session_state.demo_running = False
     else:
-        target_df = pd.DataFrame(st.session_state.demo_rows)
+        try:
+            target_df, target_summary = validate_and_clean_data(pd.DataFrame(st.session_state.demo_rows), "live demo data")
+        except Exception as e:
+            st.error(f"Live demo data is invalid: {e}")
+            target_df = None
+            target_summary = None
 
 # =============================================================================
 # DASHBOARD
 # =============================================================================
-if target_df is not None:
-    res = evaluate_telemetry(
-        target_df,
-        dampen_event_day=flag_event_day,
-        event_start=event_start,
-        event_end=event_end,
-    )
-    recs = build_recommendations(res) if res["has_leak"] else []
+if target_df is not None and training_df is not None:
+    res = None
+    recs = []
+    analysis_id = None
+    model_reused = None
+    ml_error = None
 
-    if not res["time_parsed"]:
-        st.caption("Note: we couldn't read dates/times from the Timestamp column, so time-of-day context wasn't used in this analysis.")
+    with st.spinner("Analyzing telemetry with HydroSentinel AI..."):
+        try:
+            _, model_reused = ensure_model(training_df, MODEL_PATH)
+        except Exception as e:
+            ml_error = f"We couldn't prepare the leak model: {e}"
 
-    # ---- Status banner (always binary: Leak Detected / No Leak Detected) ----
-    if res["has_leak"]:
-        sev_label, _ = severity_level(res["leak_lpm"])
-        st.markdown(f"""
-        <div class="status-banner critical">
-            <div class="status-headline">🚨 Leak Detected — {sev_label} severity</div>
-            <div class="status-sub">A water-use pattern crossed the system's fixed baseline thresholds for this time period. Review the details below before taking action.</div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div class="status-banner ok">
-            <div class="status-headline">✅ No Leak Detected</div>
-            <div class="status-sub">Water use across the readings we checked stayed within the school's fixed statistical baseline.</div>
-        </div>
-        """, unsafe_allow_html=True)
+        if ml_error is None:
+            try:
+                res = evaluate_telemetry(target_df, MODEL_PATH)
+            except Exception as e:
+                ml_error = f"We couldn't analyze the telemetry: {e}"
 
-    # ---- At-a-glance answers (BEFORE charts, per dashboard priority) ----
-    if res["has_leak"]:
-        sev_label, sev_class = severity_level(res["leak_lpm"])
-        sig_label = significance_level(res["total_liters"])
-        c1, c2, c3, c4, c5 = st.columns(5)
-        with c1:
-            st.markdown(f"""<div class="answer-card accent-critical">
-                <div class="label">Leak status</div><div class="value">Detected</div>
-                <div class="footnote">{res['confidence']:.0f}% detection confidence</div></div>""", unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"""<div class="answer-card accent-{sev_class}">
-                <div class="label">Severity</div><div class="value">{sev_label}</div>
-                <div class="footnote">Ø {res['diameter_mm']} mm estimated opening</div></div>""", unsafe_allow_html=True)
-        with c3:
-            st.markdown(f"""<div class="answer-card accent-warning">
-                <div class="label">Water being lost</div><div class="value">{res['leak_lpm']} L/min</div>
-                <div class="footnote">${res['cost_min']}/min in cost</div></div>""", unsafe_allow_html=True)
-        with c4:
-            st.markdown(f"""<div class="answer-card accent-info">
-                <div class="label">Environmental impact</div><div class="value">{sig_label}</div>
-                <div class="footnote">Drinking water for {res['students_count']} students lost</div></div>""", unsafe_allow_html=True)
-        with c5:
-            quick_action = recs[0]["title"] if recs else "No action needed"
-            st.markdown(f"""<div class="answer-card accent-ok">
-                <div class="label">Priority 1 action</div><div class="value" style="font-size:1.05rem;">{quick_action}</div>
-                <div class="footnote">See all 3 recommended actions below</div></div>""", unsafe_allow_html=True)
-    else:
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(f"""<div class="answer-card accent-ok"><div class="label">Leak status</div>
-                <div class="value">None</div><div class="footnote">All clear</div></div>""", unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"""<div class="answer-card accent-info"><div class="label">Typical flow</div>
-                <div class="value">{round(target_df['Flow_Rate_LPM'].median(), 1)} L/min</div>
-                <div class="footnote">Stable baseline</div></div>""", unsafe_allow_html=True)
-        with c3:
-            st.markdown(f"""<div class="answer-card accent-info"><div class="label">Typical pressure</div>
-                <div class="value">{round(target_df['Avg_Pressure_PSI'].mean(), 1)} PSI</div>
-                <div class="footnote">Within safe range</div></div>""", unsafe_allow_html=True)
+        if ml_error is None:
+            analysis_id = build_analysis_id(target_df)
+            try:
+                log_analysis_result(analysis_id, res, training_summary or {}, target_summary or {})
+            except Exception as e:
+                st.warning(f"Analysis completed, but we couldn't write logs.csv: {e}")
 
-    st.write("")
+    if ml_error is not None:
+        st.error(ml_error)
+    elif res is not None:
+        recs = build_recommendations(res) if res["has_leak"] else []
 
-    tab1, tab2 = st.tabs(["📈 Trend Chart", "🛠️ Recommended Actions"])
-
-    # ---- TAB 1: Chart (supporting evidence, not the headline) ----
-    with tab1:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=target_df["Timestamp"], y=target_df["Flow_Rate_LPM"],
-            mode="lines", name="Water flow",
-            line=dict(color="#146C5F", width=3),
-        ))
-        if res["has_leak"]:
-            fig.add_trace(go.Scatter(
-                x=res["anomalies"]["Timestamp"], y=res["anomalies"]["Flow_Rate_LPM"],
-                mode="markers", name="Flagged as unusual",
-                marker=dict(color="#B03A2E", size=10, symbol="circle", line=dict(color="#FFFFFF", width=1)),
-            ))
-            fig.add_annotation(
-                x=res["anomalies"]["Timestamp"].iloc[0], y=res["anomalies"]["Flow_Rate_LPM"].iloc[0],
-                text="Unusual reading", showarrow=True, arrowhead=2,
-                arrowcolor="#B03A2E", bgcolor="#FBEAE7", bordercolor="#B03A2E", font=dict(color="#B03A2E"),
+        if training_summary and training_summary["invalid_rows"] > 0:
+            st.warning(
+                f"Training validation removed {training_summary['invalid_rows']} invalid row(s) and kept {training_summary['valid_rows']} row(s)."
             )
-        fig.update_layout(
-            template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
-            margin=dict(l=40, r=40, t=20, b=40), height=400,
-            font=dict(family="Inter, sans-serif", color="#4B5D59"),
-            xaxis=dict(gridcolor="#EEF2F1", title="Time"),
-            yaxis=dict(gridcolor="#EEF2F1", title="Flow (L/min)"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("Each dot marks a reading that crossed the system's fixed baseline threshold for that time of day.")
+        if target_summary and target_summary["invalid_rows"] > 0:
+            st.warning(
+                f"Input validation removed {target_summary['invalid_rows']} invalid row(s) and kept {target_summary['valid_rows']} row(s)."
+            )
 
-    # ---- TAB 2: Why + What to do ----
-    with tab2:
+        if model_reused is True:
+            st.caption("Model cache: reused the persisted IsolationForest model because the training data signature did not change.")
+        elif model_reused is False:
+            st.caption("Model cache: training data changed, so HydroSentinel retrained and updated the persisted model.")
+
+        if not res["time_parsed"]:
+            st.caption("Note: we couldn't read dates/times from the Timestamp column, so time-of-day context wasn't used in this analysis.")
+
+        probability_value = float(res.get("confidence", res.get("max_leak_probability", 0.0))) if res["has_leak"] else float(res.get("max_leak_probability", 0.0))
+        status_label, status_color = probability_status(probability_value)
+        metric_col, status_col = st.columns([1, 2])
+        with metric_col:
+            st.metric("Leak Probability", f"{probability_value:.1f}%")
+        with status_col:
+            st.markdown(
+                f"<div style='padding-top:1.7rem; font-weight:700; color:{status_color};'>System status: {status_label}</div>",
+                unsafe_allow_html=True,
+            )
+
         if res["has_leak"]:
-            top_row = res["top_row"]
-
+            sev_label, _ = severity_level(res["leak_lpm"])
             st.markdown(f"""
-            <div class="why-card">
-                <span class="confidence-tag">{res['confidence']:.0f}% detection confidence</span>
-                <div class="why-title">Why the system flagged this</div>
-                <div class="why-compare">
-                    <div class="pair">Baseline flow: <b>{res['base_flow']} L/min</b> → Current flow: <b>{top_row['Flow_Rate_LPM']} L/min</b> ({res['deviation_pct']:.0f}% above baseline)</div>
-                    <div class="pair">Baseline pressure: <b>{res['base_pressure']} PSI</b> → Current pressure: <b>{top_row['Avg_Pressure_PSI']} PSI</b> ({res['pressure_drop_pct']:.0f}% drop)</div>
-                </div>
-                <div class="why-reason">This reading crossed the system's fixed detection rule — flow at least 30% above the statistical baseline for this time period, or at least 4 L/min above it. Rising flow paired with falling pressure is the same physical signature as water escaping through an unintended opening: when a fixture is used normally, flow and pressure tend to move together, but a leak pulls flow up while pressure drops.</div>
-                <span class="why-evidence">To put it in perspective: this is roughly the same rate as {res['metaphor']}.</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-            st.markdown("##### What to do next")
-            for rec in recs:
-                st.markdown(f"""
-                <div class="action-card priority-{rec['tag_class']}">
-                    <span class="action-tag {rec['tag_class']}">{rec['tag']}</span>
-                    <div class="action-title">{rec['title']}</div>
-                    <div class="action-row"><b>Reason:</b> {rec['reason']}</div>
-                    <div class="action-row"><b>Likely location:</b> {rec['location']}</div>
-                    <div class="action-row"><b>How to fix:</b> {rec['fix']}</div>
-                    <div class="action-row"><b>Why this priority:</b> {rec['why_priority']}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            # ---- Impact engine: water loss & cost across time horizons ----
-            liters_per_hour = round(res["leak_lpm"] * 60)
-            liters_per_day = round(res["leak_lpm"] * 60 * 24)
-            liters_per_month = round(res["leak_lpm"] * 60 * 24 * 30)
-            liters_per_year = round(res["leak_lpm"] * 60 * 24 * 365)
-            cost_per_day = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24, 2)
-            cost_per_month = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24 * 30)
-            cost_per_year = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24 * 365)
-            sig_label = significance_level(res["total_liters"])
-            st.markdown(f"""
-            <div class="env-card">
-                <h4>🌍 Environmental & financial impact</h4>
-                <div class="env-stat"><div class="num">{res['students_count']}</div><div class="lbl">students' daily drinking water lost so far</div></div>
-                <div class="env-stat"><div class="num">{liters_per_hour:,} L</div><div class="lbl">lost per hour if left unfixed</div></div>
-                <div class="env-stat"><div class="num">{liters_per_day:,} L</div><div class="lbl">lost per day if left unfixed</div></div>
-                <div class="env-stat"><div class="num">{liters_per_month:,} L</div><div class="lbl">lost per month if left unfixed</div></div>
-                <div class="env-stat"><div class="num">{liters_per_year:,} L</div><div class="lbl">lost per year if left unfixed</div></div>
-                <div class="env-stat"><div class="num">${cost_per_day:,}</div><div class="lbl">cost per day if ignored</div></div>
-                <div class="env-stat"><div class="num">${cost_per_month:,}</div><div class="lbl">cost per month if ignored</div></div>
-                <div class="env-stat"><div class="num">${cost_per_year:,}</div><div class="lbl">cost per year if ignored</div></div>
-                <div class="env-stat"><div class="num">{sig_label}</div><div class="lbl">environmental significance level</div></div>
+            <div class="status-banner critical">
+                <div class="status-headline">🚨 Leak Detected — {sev_label} severity</div>
+                <div class="status-sub">A water-use pattern diverged from the normal profile learned by the IsolationForest model. Review the details below before taking action.</div>
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown("""
-            <div class="action-card" style="border-left:4px solid #3F8F5F;">
-                <div class="action-title">No action needed right now</div>
-                <div class="action-row">Water use stayed within the school's fixed baseline. We'll keep watching and let you know if anything changes.</div>
+            <div class="status-banner ok">
+                <div class="status-headline">✅ No Leak Detected</div>
+                <div class="status-sub">Water use across the readings we checked stayed close to the learned normal consumption pattern.</div>
             </div>
             """, unsafe_allow_html=True)
+
+        if res["has_leak"]:
+            sev_label, sev_class = severity_level(res["leak_lpm"])
+            sig_label = significance_level(res["total_liters"])
+            c1, c2, c3, c4, c5 = st.columns(5)
+            with c1:
+                st.markdown(f"""<div class="answer-card accent-critical">
+                    <div class="label">Leak status</div><div class="value">Detected</div>
+                    <div class="footnote">{res['confidence']:.0f}% detection confidence</div></div>""", unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"""<div class="answer-card accent-{sev_class}">
+                    <div class="label">Severity</div><div class="value">{sev_label}</div>
+                    <div class="footnote">Ø {res['diameter_mm']} mm estimated opening</div></div>""", unsafe_allow_html=True)
+            with c3:
+                st.markdown(f"""<div class="answer-card accent-warning">
+                    <div class="label">Water being lost</div><div class="value">{res['leak_lpm']} L/min</div>
+                    <div class="footnote">${res['cost_min']}/min in cost</div></div>""", unsafe_allow_html=True)
+            with c4:
+                st.markdown(f"""<div class="answer-card accent-info">
+                    <div class="label">Environmental impact</div><div class="value">{sig_label}</div>
+                    <div class="footnote">Drinking water for {res['students_count']} students lost</div></div>""", unsafe_allow_html=True)
+            with c5:
+                quick_action = recs[0]["title"] if recs else "No action needed"
+                st.markdown(f"""<div class="answer-card accent-ok">
+                    <div class="label">Priority 1 action</div><div class="value" style="font-size:1.05rem;">{quick_action}</div>
+                    <div class="footnote">See all 3 recommended actions below</div></div>""", unsafe_allow_html=True)
+        else:
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(f"""<div class="answer-card accent-ok"><div class="label">Leak status</div>
+                    <div class="value">None</div><div class="footnote">All clear</div></div>""", unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"""<div class="answer-card accent-info"><div class="label">Typical flow</div>
+                    <div class="value">{round(target_df['Flow_Rate_LPM'].median(), 1)} L/min</div>
+                    <div class="footnote">Stable baseline</div></div>""", unsafe_allow_html=True)
+            with c3:
+                st.markdown(f"""<div class="answer-card accent-info"><div class="label">Typical pressure</div>
+                    <div class="value">{round(target_df['Avg_Pressure_PSI'].mean(), 1)} PSI</div>
+                    <div class="footnote">Within safe range</div></div>""", unsafe_allow_html=True)
+
+        st.write("")
+        tab1, tab2 = st.tabs(["📈 Trend Chart", "🛠️ Recommended Actions"])
+
+        with tab1:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=target_df["Timestamp"], y=target_df["Flow_Rate_LPM"],
+                mode="lines", name="Water flow",
+                line=dict(color="#146C5F", width=3),
+            ))
+            if res["has_leak"]:
+                fig.add_trace(go.Scatter(
+                    x=res["anomalies"]["Timestamp"], y=res["anomalies"]["Flow_Rate_LPM"],
+                    mode="markers", name="Flagged as unusual",
+                    marker=dict(color="#B03A2E", size=10, symbol="circle", line=dict(color="#FFFFFF", width=1)),
+                ))
+                fig.add_annotation(
+                    x=res["anomalies"]["Timestamp"].iloc[0], y=res["anomalies"]["Flow_Rate_LPM"].iloc[0],
+                    text="Unusual reading", showarrow=True, arrowhead=2,
+                    arrowcolor="#B03A2E", bgcolor="#FBEAE7", bordercolor="#B03A2E", font=dict(color="#B03A2E"),
+                )
+            fig.update_layout(
+                template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+                margin=dict(l=40, r=40, t=20, b=40), height=400,
+                font=dict(family="Inter, sans-serif", color="#4B5D59"),
+                xaxis=dict(gridcolor="#EEF2F1", title="Time"),
+                yaxis=dict(gridcolor="#EEF2F1", title="Flow (L/min)"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Each dot marks a reading that the IsolationForest model scored as anomalous relative to the normal-day training pattern.")
+
+        with tab2:
+            if res["has_leak"]:
+                top_row = res["top_row"]
+                st.markdown(f"""
+                <div class="why-card">
+                    <span class="confidence-tag">{res['confidence']:.0f}% detection confidence</span>
+                    <div class="why-title">Why the system flagged this</div>
+                    <div class="why-compare">
+                        <div class="pair">Baseline flow: <b>{res['base_flow']} L/min</b> → Current flow: <b>{top_row['Flow_Rate_LPM']} L/min</b> ({res['deviation_pct']:.0f}% above baseline)</div>
+                        <div class="pair">Baseline pressure: <b>{res['base_pressure']} PSI</b> → Current pressure: <b>{top_row['Avg_Pressure_PSI']} PSI</b> ({res['pressure_drop_pct']:.0f}% drop)</div>
+                    </div>
+                    <div class="why-reason">This reading received one of the highest anomaly scores from the IsolationForest model after it learned the normal relationship between flow, pressure, and occupancy status. Rising flow paired with falling pressure still matches the physical signature of water escaping through an unintended opening: when a fixture is used normally, flow and pressure tend to move together, but a leak pulls flow up while pressure drops.</div>
+                    <span class="why-evidence">To put it in perspective: this is roughly the same rate as {res['metaphor']}.</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown("##### What to do next")
+                for rec in recs:
+                    st.markdown(f"""
+                    <div class="action-card priority-{rec['tag_class']}">
+                        <span class="action-tag {rec['tag_class']}">{rec['tag']}</span>
+                        <div class="action-title">{rec['title']}</div>
+                        <div class="action-row"><b>Reason:</b> {rec['reason']}</div>
+                        <div class="action-row"><b>Likely location:</b> {rec['location']}</div>
+                        <div class="action-row"><b>How to fix:</b> {rec['fix']}</div>
+                        <div class="action-row"><b>Why this priority:</b> {rec['why_priority']}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                st.markdown("##### Alert review")
+                review_col1, review_col2 = st.columns(2)
+                if review_col1.button("Mark alert as correct", key=f"feedback_true_{analysis_id}"):
+                    try:
+                        save_feedback(analysis_id, "correct_alert", res)
+                        st.success("Feedback saved to feedback.csv")
+                    except Exception as e:
+                        st.error(f"We couldn't save positive feedback: {e}")
+                if review_col2.button("Mark alert as false alarm", key=f"feedback_false_{analysis_id}"):
+                    try:
+                        save_feedback(analysis_id, "false_alarm", res)
+                        st.success("Feedback saved to feedback.csv")
+                    except Exception as e:
+                        st.error(f"We couldn't save false-alarm feedback: {e}")
+
+                liters_per_hour = round(res["leak_lpm"] * 60)
+                liters_per_day = round(res["leak_lpm"] * 60 * 24)
+                liters_per_month = round(res["leak_lpm"] * 60 * 24 * 30)
+                liters_per_year = round(res["leak_lpm"] * 60 * 24 * 365)
+                cost_per_day = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24, 2)
+                cost_per_month = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24 * 30)
+                cost_per_year = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24 * 365)
+                sig_label = significance_level(res["total_liters"])
+                st.markdown(f"""
+                <div class="env-card">
+                    <h4>🌍 Environmental & financial impact</h4>
+                    <div class="env-stat"><div class="num">{res['students_count']}</div><div class="lbl">students' daily drinking water lost so far</div></div>
+                    <div class="env-stat"><div class="num">{liters_per_hour:,} L</div><div class="lbl">lost per hour if left unfixed</div></div>
+                    <div class="env-stat"><div class="num">{liters_per_day:,} L</div><div class="lbl">lost per day if left unfixed</div></div>
+                    <div class="env-stat"><div class="num">{liters_per_month:,} L</div><div class="lbl">lost per month if left unfixed</div></div>
+                    <div class="env-stat"><div class="num">{liters_per_year:,} L</div><div class="lbl">lost per year if left unfixed</div></div>
+                    <div class="env-stat"><div class="num">${cost_per_day:,}</div><div class="lbl">cost per day if ignored</div></div>
+                    <div class="env-stat"><div class="num">${cost_per_month:,}</div><div class="lbl">cost per month if ignored</div></div>
+                    <div class="env-stat"><div class="num">${cost_per_year:,}</div><div class="lbl">cost per year if ignored</div></div>
+                    <div class="env-stat"><div class="num">{sig_label}</div><div class="lbl">environmental significance level</div></div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                <div class="action-card" style="border-left:4px solid #3F8F5F;">
+                    <div class="action-title">No action needed right now</div>
+                    <div class="action-row">Water use stayed close to the learned normal profile. We'll keep watching and let you know if anything changes.</div>
+                </div>
+                """, unsafe_allow_html=True)
 
 # =============================================================================
 # RESPONSIBLE AI NOTICE
@@ -750,9 +836,9 @@ if target_df is not None:
 st.markdown("""
     <div class="rai-card">
         <h4>⚖️ What this decision-support system can and can't do</h4>
-        <div class="rai-item"><b>A calculated score, not a guess.</b> The confidence percentage reflects how far a reading exceeds the school's fixed statistical baseline, combined with whether pressure behavior corroborates it. It comes from fixed rules and physics, not a machine-learning prediction.</div>
+        <div class="rai-item"><b>A model-based score, not a guess.</b> The confidence percentage is derived from the anomaly score produced by the IsolationForest model after it learns normal no-leak patterns across flow, pressure, and occupancy context.</div>
         <div class="rai-item"><b>A person always decides.</b> This system never shuts off water or contacts anyone automatically. Every alert needs a maintenance team member to review it and choose what to do — shutting off water during school hours can create its own safety and sanitation risks.</div>
-        <div class="rai-item"><b>Known limitation.</b> Unusual but legitimate events — an assembly, a fire drill, extra cleaning — can occasionally cross the same thresholds as a leak. Marking "planned event" in the sidebar raises the threshold for that period so normal activity isn't flagged.</div>
-        <div class="rai-item"><b>How this prototype was validated.</b> This version calculates its baseline directly from the uploaded file, since no historical school data was available for testing. In a real deployment, the system would first establish a school's normal baseline using several weeks of real sensor data, then compare new incoming readings against that fixed baseline — flagging anything that crosses the defined thresholds for the maintenance team to review.</div>
+        <div class="rai-item"><b>Known limitation.</b> Unusual but legitimate events can still look abnormal if the training data did not include similar no-leak examples. The model becomes more reliable as you retrain it on clean normal and event-day data.</div>
+        <div class="rai-item"><b>How this prototype was validated.</b> This version trains on the bundled clean normal and event-day samples unless you provide your own no-leak training file. Every run is also written to logs.csv, and user reviews of alerts are written to feedback.csv to support future tuning.</div>
     </div>
     """, unsafe_allow_html=True)

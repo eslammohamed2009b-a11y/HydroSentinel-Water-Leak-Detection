@@ -78,6 +78,11 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# HydroSentinel runtime artifacts
+hydrosentinel_isolation_forest.joblib
+logs.csv
+feedback.csv
+
 # IPython
 profile_default/
 ipython_config.py
