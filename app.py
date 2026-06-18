@@ -4,7 +4,15 @@ import numpy as np
 import plotly.graph_objects as go
 import time
 import hashlib
+import sys
 from pathlib import Path
+
+CURRENT_DIR = Path(__file__).resolve().parent
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.append(str(CURRENT_DIR))
+
+import ml_engine
+
 from ml_engine import (
     REQUIRED_COLUMNS,
     WATER_COST_PER_LITER,
@@ -189,6 +197,27 @@ MODEL_PATH = app_dir / "hydrosentinel_isolation_forest.joblib"
 FEEDBACK_PATH = app_dir / "feedback.csv"
 LOGS_PATH = app_dir / "logs.csv"
 
+if "analysis_requested" not in st.session_state:
+    st.session_state["analysis_requested"] = False
+if "analysis_target_signature" not in st.session_state:
+    st.session_state["analysis_target_signature"] = None
+if "uploaded_file_size" not in st.session_state:
+    st.session_state["uploaded_file_size"] = "No file"
+
+
+def handle_telemetry_upload_change():
+    """Reset analysis state when the telemetry uploader value changes."""
+    uploaded = st.session_state.get("telemetry_uploader")
+    if uploaded is None:
+        st.session_state["uploaded_file_size"] = "No file"
+        st.session_state["analysis_requested"] = False
+        st.session_state["analysis_target_signature"] = None
+        return
+
+    st.session_state["uploaded_file_size"] = uploaded.size
+    st.session_state["analysis_requested"] = False
+    st.session_state["analysis_target_signature"] = None
+
 with st.sidebar:
     st.subheader("📥 Download Samples")
     try:
@@ -250,8 +279,14 @@ with st.sidebar:
     uploaded_file = None
     stream_trigger = False
     if mode == "Upload a CSV file":
-        uploaded_file = st.file_uploader("Upload campus water readings", type=["csv"])
+        uploaded_file = st.file_uploader(
+            "Upload campus water readings",
+            type=["csv"],
+            key="telemetry_uploader",
+            on_change=handle_telemetry_upload_change,
+        )
         st.caption("Needs columns: Timestamp, Flow_Rate_LPM, Avg_Pressure_PSI, Occupancy_Status")
+        st.write("DEBUG: File size is", uploaded_file.size if uploaded_file else "No file")
     else:
         st.caption("This simulates a normal morning that develops into a leak later in the day.")
         stream_trigger = st.button("▶ Run live demo")
@@ -431,6 +466,7 @@ def load_target_dataframe(uploaded_file):
     Returns:
         A tuple of (target_dataframe, validation_summary).
     """
+    uploaded_file.seek(0)
     raw_df = pd.read_csv(uploaded_file)
     return validate_and_clean_data(raw_df, "uploaded sensor data")
 
@@ -563,13 +599,44 @@ target_df = None
 training_df = None
 training_summary = None
 target_summary = None
+results_placeholder = st.empty()
+upload_mode_active = mode == "Upload a CSV file"
+upload_ready = upload_mode_active and uploaded_file is not None
+current_upload_signature = None
+
+if upload_ready:
+    current_upload_signature = f"{uploaded_file.name}:{uploaded_file.size}"
+    if st.session_state.get("analysis_target_signature") != current_upload_signature:
+        st.session_state["analysis_requested"] = False
+
+analyze_clicked = False
+if upload_mode_active:
+    analyze_clicked = st.button("Analyze", key="analyze_uploaded_file", disabled=not upload_ready)
+    if analyze_clicked and current_upload_signature is not None:
+        st.session_state["analysis_requested"] = True
+        st.session_state["analysis_target_signature"] = current_upload_signature
+
+should_run_upload_analysis = (
+    upload_ready
+    and st.session_state.get("analysis_requested", False)
+    and st.session_state.get("analysis_target_signature") == current_upload_signature
+)
 
 try:
     training_df, training_summary = load_training_dataframe(training_file)
 except Exception as e:
     st.error(f"We couldn't prepare the training data: {e}")
 
-if mode == "Upload a CSV file" and uploaded_file is not None:
+if upload_mode_active and uploaded_file is None:
+    st.info("Upload a telemetry CSV file to start the analysis.")
+
+if upload_ready:
+    st.write("تم استلام الملف بنجاح")
+    if not should_run_upload_analysis:
+        st.info("Click Analyze to start processing the uploaded telemetry file.")
+    results_placeholder.empty()
+
+if should_run_upload_analysis:
     try:
         target_df, target_summary = load_target_dataframe(uploaded_file)
     except Exception as e:
@@ -610,122 +677,126 @@ elif mode == "Run a live demo (simulated)":
 # =============================================================================
 # DASHBOARD
 # =============================================================================
-if target_df is not None and training_df is not None:
-    res = None
-    recs = []
-    analysis_id = None
-    model_reused = None
-    ml_error = None
+should_render_dashboard = training_df is not None and target_df is not None and (should_run_upload_analysis or mode == "Run a live demo (simulated)")
 
-    with st.spinner("Analyzing telemetry with HydroSentinel AI..."):
-        try:
-            _, model_reused = ensure_model(training_df, MODEL_PATH)
-        except Exception as e:
-            ml_error = f"We couldn't prepare the leak model: {e}"
+if should_render_dashboard:
+    results_placeholder.empty()
+    with results_placeholder.container():
+        res = None
+        recs = []
+        analysis_id = None
+        model_reused = None
+        ml_error = None
 
-        if ml_error is None:
+        with st.spinner("Analyzing telemetry with HydroSentinel AI..."):
             try:
-                res = evaluate_telemetry(target_df, MODEL_PATH)
+                _, model_reused = ensure_model(training_df, MODEL_PATH)
             except Exception as e:
-                ml_error = f"We couldn't analyze the telemetry: {e}"
+                ml_error = f"We couldn't prepare the leak model: {e}"
 
-        if ml_error is None:
-            analysis_id = build_analysis_id(target_df)
-            try:
-                log_analysis_result(analysis_id, res, training_summary or {}, target_summary or {})
-            except Exception as e:
-                st.warning(f"Analysis completed, but we couldn't write logs.csv: {e}")
+            if ml_error is None:
+                try:
+                    res = evaluate_telemetry(target_df, MODEL_PATH)
+                except Exception as e:
+                    ml_error = f"We couldn't analyze the telemetry: {e}"
 
-    if ml_error is not None:
-        st.error(ml_error)
-    elif res is not None:
-        recs = build_recommendations(res) if res["has_leak"] else []
+            if ml_error is None:
+                analysis_id = build_analysis_id(target_df)
+                try:
+                    log_analysis_result(analysis_id, res, training_summary or {}, target_summary or {})
+                except Exception as e:
+                    st.warning(f"Analysis completed, but we couldn't write logs.csv: {e}")
 
-        if training_summary and training_summary["invalid_rows"] > 0:
-            st.warning(
-                f"Training validation removed {training_summary['invalid_rows']} invalid row(s) and kept {training_summary['valid_rows']} row(s)."
-            )
-        if target_summary and target_summary["invalid_rows"] > 0:
-            st.warning(
-                f"Input validation removed {target_summary['invalid_rows']} invalid row(s) and kept {target_summary['valid_rows']} row(s)."
-            )
+        if ml_error is not None:
+            st.error(ml_error)
+        elif res is not None:
+            recs = build_recommendations(res) if res["has_leak"] else []
 
-        if model_reused is True:
-            st.caption("Model cache: reused the persisted IsolationForest model because the training data signature did not change.")
-        elif model_reused is False:
-            st.caption("Model cache: training data changed, so HydroSentinel retrained and updated the persisted model.")
+            if training_summary and training_summary["invalid_rows"] > 0:
+                st.warning(
+                    f"Training validation removed {training_summary['invalid_rows']} invalid row(s) and kept {training_summary['valid_rows']} row(s)."
+                )
+            if target_summary and target_summary["invalid_rows"] > 0:
+                st.warning(
+                    f"Input validation removed {target_summary['invalid_rows']} invalid row(s) and kept {target_summary['valid_rows']} row(s)."
+                )
 
-        if not res["time_parsed"]:
-            st.caption("Note: we couldn't read dates/times from the Timestamp column, so time-of-day context wasn't used in this analysis.")
+            if model_reused is True:
+                st.caption("Model cache: reused the persisted IsolationForest model because the training data signature did not change.")
+            elif model_reused is False:
+                st.caption("Model cache: training data changed, so HydroSentinel retrained and updated the persisted model.")
 
-        probability_value = float(res.get("confidence", res.get("max_leak_probability", 0.0))) if res["has_leak"] else float(res.get("max_leak_probability", 0.0))
-        status_label, status_color = probability_status(probability_value)
-        metric_col, status_col = st.columns([1, 2])
-        with metric_col:
-            st.metric("Leak Probability", f"{probability_value:.1f}%")
-        with status_col:
-            st.markdown(
-                f"<div style='padding-top:1.7rem; font-weight:700; color:{status_color};'>System status: {status_label}</div>",
-                unsafe_allow_html=True,
-            )
+            if not res["time_parsed"]:
+                st.caption("Note: we couldn't read dates/times from the Timestamp column, so time-of-day context wasn't used in this analysis.")
 
-        if res["has_leak"]:
-            sev_label, _ = severity_level(res["leak_lpm"])
-            st.markdown(f"""
-            <div class="status-banner critical">
-                <div class="status-headline">🚨 Leak Detected — {sev_label} severity</div>
-                <div class="status-sub">A water-use pattern diverged from the normal profile learned by the IsolationForest model. Review the details below before taking action.</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div class="status-banner ok">
-                <div class="status-headline">✅ No Leak Detected</div>
-                <div class="status-sub">Water use across the readings we checked stayed close to the learned normal consumption pattern.</div>
-            </div>
-            """, unsafe_allow_html=True)
+            probability_value = float(res.get("confidence", res.get("max_leak_probability", 0.0))) if res["has_leak"] else float(res.get("max_leak_probability", 0.0))
+            status_label, status_color = probability_status(probability_value)
+            metric_col, status_col = st.columns([1, 2])
+            with metric_col:
+                st.metric("Leak Probability", f"{probability_value:.1f}%")
+            with status_col:
+                st.markdown(
+                    f"<div style='padding-top:1.7rem; font-weight:700; color:{status_color};'>System status: {status_label}</div>",
+                    unsafe_allow_html=True,
+                )
 
-        if res["has_leak"]:
-            sev_label, sev_class = severity_level(res["leak_lpm"])
-            sig_label = significance_level(res["total_liters"])
-            c1, c2, c3, c4, c5 = st.columns(5)
-            with c1:
-                st.markdown(f"""<div class="answer-card accent-critical">
-                    <div class="label">Leak status</div><div class="value">Detected</div>
-                    <div class="footnote">{res['confidence']:.0f}% detection confidence</div></div>""", unsafe_allow_html=True)
-            with c2:
-                st.markdown(f"""<div class="answer-card accent-{sev_class}">
+            if res["has_leak"]:
+                sev_label, _ = severity_level(res["leak_lpm"])
+                st.markdown(f"""
+                <div class="status-banner critical">
+                    <div class="status-headline">🚨 Leak Detected — {sev_label} severity</div>
+                    <div class="status-sub">A water-use pattern diverged from the normal profile learned by the IsolationForest model. Review the details below before taking action.</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                <div class="status-banner ok">
+                    <div class="status-headline">✅ No Leak Detected</div>
+                    <div class="status-sub">Water use across the readings we checked stayed close to the learned normal consumption pattern.</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            if res["has_leak"]:
+                sev_label, sev_class = severity_level(res["leak_lpm"])
+                sig_label = significance_level(res["total_liters"])
+                c1, c2, c3, c4, c5 = st.columns(5)
+                with c1:
+                    st.markdown(f"""<div class="answer-card accent-critical">
+                        <div class="label">Leak status</div><div class="value">Detected</div>
+                        <div class="footnote">{res['confidence']:.0f}% detection confidence</div></div>""", unsafe_allow_html=True)
+                with c2:
+                    st.markdown(f"""<div class="answer-card accent-{sev_class}">
                     <div class="label">Severity</div><div class="value">{sev_label}</div>
                     <div class="footnote">Ø {res['diameter_mm']} mm estimated opening</div></div>""", unsafe_allow_html=True)
-            with c3:
-                st.markdown(f"""<div class="answer-card accent-warning">
+                with c3:
+                    st.markdown(f"""<div class="answer-card accent-warning">
                     <div class="label">Water being lost</div><div class="value">{res['leak_lpm']} L/min</div>
                     <div class="footnote">${res['cost_min']}/min in cost</div></div>""", unsafe_allow_html=True)
-            with c4:
-                st.markdown(f"""<div class="answer-card accent-info">
+                with c4:
+                    st.markdown(f"""<div class="answer-card accent-info">
                     <div class="label">Environmental impact</div><div class="value">{sig_label}</div>
                     <div class="footnote">Drinking water for {res['students_count']} students lost</div></div>""", unsafe_allow_html=True)
-            with c5:
-                quick_action = recs[0]["title"] if recs else "No action needed"
-                st.markdown(f"""<div class="answer-card accent-ok">
+                with c5:
+                    quick_action = recs[0]["title"] if recs else "No action needed"
+                    st.markdown(f"""<div class="answer-card accent-ok">
                     <div class="label">Priority 1 action</div><div class="value" style="font-size:1.05rem;">{quick_action}</div>
                     <div class="footnote">See all 3 recommended actions below</div></div>""", unsafe_allow_html=True)
-        else:
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(f"""<div class="answer-card accent-ok"><div class="label">Leak status</div>
+            else:
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.markdown(f"""<div class="answer-card accent-ok"><div class="label">Leak status</div>
                     <div class="value">None</div><div class="footnote">All clear</div></div>""", unsafe_allow_html=True)
-            with c2:
-                st.markdown(f"""<div class="answer-card accent-info"><div class="label">Typical flow</div>
+                with c2:
+                    st.markdown(f"""<div class="answer-card accent-info"><div class="label">Typical flow</div>
                     <div class="value">{round(target_df['Flow_Rate_LPM'].median(), 1)} L/min</div>
                     <div class="footnote">Stable baseline</div></div>""", unsafe_allow_html=True)
-            with c3:
-                st.markdown(f"""<div class="answer-card accent-info"><div class="label">Typical pressure</div>
+                with c3:
+                    st.markdown(f"""<div class="answer-card accent-info"><div class="label">Typical pressure</div>
                     <div class="value">{round(target_df['Avg_Pressure_PSI'].mean(), 1)} PSI</div>
                     <div class="footnote">Within safe range</div></div>""", unsafe_allow_html=True)
 
-        st.write("")
-        tab1, tab2 = st.tabs(["📈 Trend Chart", "🛠️ Recommended Actions"])
+            st.write("")
+            tab1, tab2 = st.tabs(["📈 Trend Chart", "🛠️ Recommended Actions"])
 
         with tab1:
             fig = go.Figure()
