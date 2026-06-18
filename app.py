@@ -22,6 +22,7 @@ from ml_engine import (
     find_sample_file,
     load_default_training_data,
     load_training_labels,
+    load_training_labels_for_mode,
     validate_and_clean_data,
 )
 
@@ -287,6 +288,16 @@ with st.sidebar:
         help="In a real school, this data would stream automatically from smart water meters. For this prototype, use a CSV or watch the simulated demo.",
     )
 
+    event_mode = st.toggle(
+        "Event Mode",
+        value=False,
+        help="Enable this when the school is hosting events. HydroSentinel will train with event-day no-leak samples and apply event-aware scoring.",
+    )
+    if event_mode:
+        st.caption("Event Mode is ON: model context includes event-day patterns.")
+    else:
+        st.caption("Event Mode is OFF: model focuses on standard school-day usage patterns.")
+
     uploaded_file = None
     stream_trigger = False
     if mode == "Upload a CSV file":
@@ -297,7 +308,6 @@ with st.sidebar:
             on_change=handle_telemetry_upload_change,
         )
         st.caption("Needs columns: Timestamp, Flow_Rate_LPM, Avg_Pressure_PSI, Occupancy_Status")
-        st.write("DEBUG: File size is", uploaded_file.size if uploaded_file else "No file")
     else:
         st.caption("This simulates a normal morning that develops into a leak later in the day.")
         stream_trigger = st.button("▶ Run live demo")
@@ -455,7 +465,8 @@ def load_training_dataframe():
     Returns:
         A tuple of (training_dataframe, validation_summary).
     """
-    default_training_df = load_default_training_data([sample_files["normal"], sample_files["event"]])
+    default_training_groups = [sample_files["normal"], sample_files["event"]]
+    default_training_df = load_default_training_data(default_training_groups)
     if default_training_df is None:
         raise FileNotFoundError("No bundled no-leak training samples are available.")
     return validate_and_clean_data(default_training_df, "default training data")
@@ -674,7 +685,11 @@ should_run_upload_analysis = (
 )
 
 try:
-    training_df = load_training_labels([sample_files["normal"], sample_files["event"]])
+    training_df = load_training_labels_for_mode(
+        sample_files["normal"],
+        sample_files["event"],
+        event_mode=event_mode,
+    )
     training_summary = training_df.attrs.get("validation_summary", {})
 except Exception as e:
     st.error(f"We couldn't prepare the diagnostic training data: {e}")
@@ -683,7 +698,6 @@ if upload_mode_active and uploaded_file is None:
     st.info("Upload a telemetry CSV file to start the analysis.")
 
 if upload_ready:
-    st.write("File received successfully.")
     st.success(f"Loaded file: {st.session_state.get('telemetry_file_name', uploaded_file.name)}")
     if not should_run_upload_analysis:
         st.info("Click Analyze to start processing the uploaded telemetry file.")
@@ -749,7 +763,7 @@ if should_render_dashboard:
 
             if ml_error is None:
                 try:
-                    res = evaluate_telemetry(target_df, MODEL_PATH)
+                    res = evaluate_telemetry(target_df, MODEL_PATH, event_mode=event_mode)
                 except Exception as e:
                     ml_error = f"We couldn't analyze the telemetry: {e}"
 
@@ -778,6 +792,9 @@ if should_render_dashboard:
                 st.caption("Model cache: reused the persisted diagnostic model because the training labels did not change.")
             elif model_reused is False:
                 st.caption("Model cache: training labels changed, so HydroSentinel retrained and updated the persisted diagnostic model.")
+
+            if res.get("event_rows", 0) > 0 and not res.get("event_mode", False):
+                st.caption("Event readings detected while Event Mode is OFF. Turn Event Mode ON for more event-aware scoring.")
 
             if not res["time_parsed"]:
                 st.caption("Note: we couldn't read dates/times from the Timestamp column, so time-of-day context wasn't used in this analysis.")
@@ -848,7 +865,6 @@ if should_render_dashboard:
                     <div class="value">{round(target_df['Avg_Pressure_PSI'].mean(), 1)} PSI</div>
                     <div class="footnote">Within safe range</div></div>""", unsafe_allow_html=True)
 
-            st.write("")
             tab1, tab2 = st.tabs(["📈 Trend Chart", "🛠️ Recommended Actions"])
 
         with tab1:

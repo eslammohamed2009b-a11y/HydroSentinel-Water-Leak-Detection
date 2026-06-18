@@ -25,6 +25,7 @@ REQUIRED_COLUMNS = ["Timestamp", "Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy
 MODEL_FEATURES = ["Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Status"]
 DIAGNOSTIC_FEATURES = ["Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Status", "Hour", "Is_Weekend"]
 VALID_OCCUPANCY_STATUSES = {"Class_Hours", "After_Hours", "Vacation", "Event"}
+EVENT_OCCUPANCY_STATUS = "Event"
 MAX_FLOW_LPM = 500.0
 MAX_PRESSURE_PSI = 150.0
 WATER_COST_PER_LITER = 0.007
@@ -165,6 +166,26 @@ def load_training_labels(sample_groups):
     cleaned_labels["Leak_Loss_LPM"] = pd.to_numeric(cleaned_labels["Leak_Loss_LPM"], errors="coerce").fillna(0.0)
     cleaned_labels.attrs["validation_summary"] = summary
     return cleaned_labels
+
+
+def load_training_labels_for_mode(normal_sample_group, event_sample_group=None, event_mode=False):
+    """Load labels using normal-only or normal+event samples based on mode.
+
+    Args:
+        normal_sample_group: Candidate paths for normal no-leak samples.
+        event_sample_group: Candidate paths for event no-leak samples.
+        event_mode: When True, include event no-leak samples in training.
+
+    Returns:
+        A cleaned labeled DataFrame with mode metadata in attrs.
+    """
+    sample_groups = [normal_sample_group]
+    if event_mode and event_sample_group is not None:
+        sample_groups.append(event_sample_group)
+
+    labels = load_training_labels(sample_groups)
+    labels.attrs["event_mode"] = bool(event_mode)
+    return labels
 
 
 def validate_required_columns(df):
@@ -456,7 +477,7 @@ def predict_leak(df_new, model_path):
     return scored_df
 
 
-def predict_diagnostic_labels(df_new, model_path):
+def predict_diagnostic_labels(df_new, model_path, event_mode=False):
     """Predict leak type and loss from the labeled diagnostic model."""
     scored_df, validation_summary = validate_and_clean_data(df_new, "diagnostic inference data")
     payload = load_model_bundle(model_path)
@@ -478,12 +499,20 @@ def predict_diagnostic_labels(df_new, model_path):
     scored_df["Predicted_Loss_LPM"] = np.round(np.maximum(predicted_loss, 0.0), 1)
     scored_df["Leak_Probability"] = leak_probability
     scored_df["Leak_Flag"] = scored_df["Predicted_Leak_Type"].astype(str).ne("no_leak")
+
+    # When event mode is disabled, require higher confidence for Event rows
+    # to reduce false positives from legitimately elevated event-time usage.
+    if not event_mode:
+        event_mask = scored_df["Occupancy_Status"].eq(EVENT_OCCUPANCY_STATUS)
+        low_confidence_event = scored_df["Leak_Probability"] < 80.0
+        scored_df.loc[event_mask & low_confidence_event, "Leak_Flag"] = False
+
     scored_df["Anomaly_Score"] = np.where(scored_df["Leak_Flag"], scored_df["Leak_Probability"], 0.0)
     scored_df.attrs["validation_summary"] = validation_summary
     return scored_df
 
 
-def evaluate_telemetry(data, model_path):
+def evaluate_telemetry(data, model_path, event_mode=False):
     """Summarize leak analysis results from a scored telemetry DataFrame.
 
     Args:
@@ -494,9 +523,10 @@ def evaluate_telemetry(data, model_path):
         A metrics dictionary used by the Streamlit UI.
     """
     payload = load_model_bundle(model_path)
-    scored = predict_diagnostic_labels(data, model_path)
+    scored = predict_diagnostic_labels(data, model_path, event_mode=event_mode)
     scored["Confidence"] = scored["Leak_Type_Confidence"]
     scored["Loss_LPM"] = scored["Predicted_Loss_LPM"]
+    event_rows = int(scored["Occupancy_Status"].eq(EVENT_OCCUPANCY_STATUS).sum())
 
     anomalies = scored[scored["Leak_Flag"]]
     has_leak = len(anomalies) > 0
@@ -511,6 +541,8 @@ def evaluate_telemetry(data, model_path):
         "metaphor": "No leak detected",
         "students_count": 0,
         "time_parsed": bool(scored["_time_parsed"].iloc[0]),
+        "event_mode": bool(event_mode),
+        "event_rows": event_rows,
         "validation_summary": scored.attrs.get("validation_summary", {}),
         "max_leak_probability": float(scored["Leak_Probability"].max()) if has_leak else 0.0,
         "leak_type": None,
