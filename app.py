@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import time
+import os
+from pathlib import Path
 
 # =============================================================================
 # PAGE CONFIG
@@ -179,15 +181,31 @@ LARGE_LEAK_DIAMETER_MM = 15.0    # above this estimated opening size, treat as a
 # =============================================================================
 # SIDEBAR — DATA INPUT & DETECTION CONTEXT
 # =============================================================================
+
+# Determine the directory where sample files are located
+sample_dir = Path(__file__).parent if "__file__" in dir() else Path("C:/Users/User/OneDrive/Desktop/HydroSentinel")
+if not sample_dir.exists():
+    sample_dir = Path("C:/Users/User/OneDrive/Desktop/HydroSentinel")
+
 with st.sidebar:
     st.subheader("📥 Download Samples")
     try:
-        with open("no_leak.csv", "rb") as f:
-            st.download_button("📥 No Leak Data", f, "no_leak.csv")
-        with open("leak_normal.csv", "rb") as f:
-            st.download_button("⚠️ Leak Data", f, "leak_normal.csv")
-    except FileNotFoundError:
-        st.warning("Sample files missing.")
+        no_leak_path = sample_dir / "no_leak.csv"
+        leak_normal_path = sample_dir / "leak_normal.csv"
+        
+        if no_leak_path.exists():
+            with open(no_leak_path, "rb") as f:
+                st.download_button("📥 No Leak Data", f, "no_leak.csv")
+        else:
+            st.warning(f"No Leak Data not found at {no_leak_path}")
+            
+        if leak_normal_path.exists():
+            with open(leak_normal_path, "rb") as f:
+                st.download_button("⚠️ Leak Data", f, "leak_normal.csv")
+        else:
+            st.warning(f"Leak Data not found at {leak_normal_path}")
+    except Exception as e:
+        st.warning(f"Error loading sample files: {str(e)}")
 
     st.markdown("---")
     st.markdown(
