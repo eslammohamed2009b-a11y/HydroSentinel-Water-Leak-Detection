@@ -1,701 +1,330 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-import time
+from __future__ import annotations
+
 import hashlib
 import io
 import sys
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.append(str(CURRENT_DIR))
 
-import ml_engine
-
 from ml_engine import (
-    REQUIRED_COLUMNS,
+    DAILY_DRINKING_LITERS_PER_STUDENT,
     WATER_COST_PER_LITER,
     ensure_diagnostic_model,
     evaluate_telemetry,
-    find_sample_file,
-    load_default_training_data,
-    load_training_labels,
     load_training_labels_for_mode,
     validate_and_clean_data,
 )
 
-# =============================================================================
-# PAGE CONFIG
-# =============================================================================
+
 st.set_page_config(
     page_title="HydroSentinel — Water Infrastructure Decision Support for Schools",
     page_icon="💧",
     layout="wide",
 )
 
-# =============================================================================
-# DESIGN SYSTEM
-# A calm, trustworthy "field report" look for a decision-support tool that
-# school maintenance teams will actually use — not a security-ops or hacker dashboard.
-# =============================================================================
-st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Lora:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
-    :root {
-        --ink: #1B2A28;
-        --ink-soft: #4B5D59;
-        --paper: #F6F8F7;
-        --panel: #FFFFFF;
-        --border: #DDE5E2;
-        --teal: #146C5F;
-        --teal-soft: #E3F0EC;
-        --leaf: #3F8F5F;
-        --leaf-soft: #EAF6EE;
-        --amber: #B9791A;
-        --amber-soft: #FCF1DE;
-        --coral: #B03A2E;
-        --coral-soft: #FBEAE7;
-    }
-
-    html, body, .main, [data-testid="stAppViewContainer"] {
-        background-color: var(--paper);
-        color: var(--ink);
-        font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
-    }
-
-    h1, h2, h3, .serif {
-        font-family: 'Lora', Georgia, serif;
-        color: var(--ink);
-        letter-spacing: -0.2px;
-    }
-
-    p, span, div, label { color: var(--ink); }
-
-    [data-testid="stSidebar"] {
-        background-color: var(--panel);
-        border-right: 1px solid var(--border);
-    }
-
-    /* Top banner / wordmark */
-    .app-title { font-family: 'Lora', Georgia, serif; font-weight: 700; font-size: 2rem; color: var(--ink); margin-bottom: 2px; }
-    .app-subtitle { font-family: 'Inter', sans-serif; color: var(--ink-soft); font-size: 1rem; margin-bottom: 22px; }
-
-    /* Mission pipeline strip — literal sequence: data in -> analysis -> insight -> action */
-    .pipeline-wrap { display: flex; align-items: center; gap: 10px; margin: 6px 0 26px 0; flex-wrap: wrap; }
-    .pipeline-step {
-        background-color: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-        padding: 10px 16px; font-size: 0.88rem; font-weight: 600; color: var(--ink);
-        display: flex; align-items: center; gap: 8px; flex: 1; min-width: 150px;
-    }
-    .pipeline-step .num { color: var(--teal); font-family: 'Lora', serif; font-weight: 700; }
-    .pipeline-arrow { color: var(--ink-soft); font-size: 1.1rem; }
-
-    /* Context notice */
-    .context-note {
-        background-color: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--teal);
-        padding: 14px 18px; border-radius: 6px; color: var(--ink-soft); font-size: 0.88rem;
-        margin-bottom: 26px; line-height: 1.5;
-    }
-
-    /* Status banners */
-    .status-banner {
-        border-radius: 8px; padding: 18px 22px; margin-bottom: 24px; border: 1px solid;
-    }
-    .status-banner.critical { background-color: var(--coral-soft); border-color: var(--coral); }
-    .status-banner.ok { background-color: var(--leaf-soft); border-color: var(--leaf); }
-    .status-headline { font-family: 'Lora', serif; font-weight: 700; font-size: 1.25rem; margin-bottom: 4px; }
-    .status-banner.critical .status-headline { color: var(--coral); }
-    .status-banner.ok .status-headline { color: var(--leaf); }
-    .status-sub { font-size: 0.92rem; color: var(--ink-soft); }
-
-    /* At-a-glance answer cards (shown before charts) */
-    .answer-card {
-        background-color: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-        padding: 16px 18px; height: 100%;
-    }
-    .answer-card .label { font-size: 0.78rem; color: var(--ink-soft); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 6px; }
-    .answer-card .value { font-family: 'Lora', serif; font-size: 1.45rem; font-weight: 700; color: var(--ink); line-height: 1.25; }
-    .answer-card .footnote { font-size: 0.78rem; color: var(--ink-soft); margin-top: 6px; }
-    .answer-card.accent-critical { border-left: 4px solid var(--coral); }
-    .answer-card.accent-warning { border-left: 4px solid var(--amber); }
-    .answer-card.accent-ok { border-left: 4px solid var(--leaf); }
-    .answer-card.accent-info { border-left: 4px solid var(--teal); }
-
-    /* Streamlit metric overrides (used inside tabs) */
-    div[data-testid="stMetricValue"] { font-family: 'Lora', serif; font-size: 1.9rem; font-weight: 700; color: var(--ink); }
-    div[data-testid="stMetricLabel"] { color: var(--ink-soft); font-weight: 600; }
-
-    /* Explainability ("why") cards */
-    .why-card {
-        background-color: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--teal);
-        border-radius: 8px; padding: 18px 20px; margin-bottom: 16px;
-    }
-    .why-title { font-family: 'Lora', serif; font-weight: 700; color: var(--ink); font-size: 1.05rem; margin-bottom: 10px; }
-    .why-compare { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 10px; }
-    .why-compare .pair { font-size: 0.88rem; color: var(--ink-soft); }
-    .why-compare .pair b { color: var(--ink); font-size: 0.95rem; }
-    .why-reason { font-size: 0.92rem; color: var(--ink); margin-bottom: 8px; line-height: 1.5; }
-    .why-evidence { font-size: 0.82rem; color: var(--ink-soft); background: var(--paper); padding: 8px 10px; border-radius: 4px; display: block; }
-    .confidence-tag { display: inline-block; background: var(--teal-soft); color: var(--teal); font-size: 0.78rem; font-weight: 700; padding: 3px 10px; border-radius: 20px; margin-bottom: 10px; }
-
-    /* Recommendation cards (action / reason / evidence) */
-    .action-card {
-        background-color: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-        padding: 18px 20px; margin-bottom: 16px;
-    }
-    .action-card.priority-high { border-left: 4px solid var(--coral); }
-    .action-card.priority-medium { border-left: 4px solid var(--amber); }
-    .action-card.priority-low { border-left: 4px solid var(--teal); }
-    .action-tag { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 9px; border-radius: 20px; }
-    .action-tag.high { background: var(--coral-soft); color: var(--coral); }
-    .action-tag.medium { background: var(--amber-soft); color: var(--amber); }
-    .action-tag.low { background: var(--teal-soft); color: var(--teal); }
-    .action-title { font-family: 'Lora', serif; font-weight: 700; font-size: 1.05rem; margin: 8px 0 10px 0; }
-    .action-row { font-size: 0.9rem; margin-bottom: 6px; line-height: 1.5; }
-    .action-row b { color: var(--ink); }
-
-    /* Environmental impact panel */
-    .env-card {
-        background-color: var(--leaf-soft); border: 1px solid var(--leaf); border-radius: 8px;
-        padding: 20px 22px; margin-bottom: 24px;
-    }
-    .env-card h4 { font-family: 'Lora', serif; color: var(--leaf); margin: 0 0 12px 0; font-size: 1.1rem; }
-    .env-stat { display: inline-block; margin-right: 32px; margin-bottom: 8px; }
-    .env-stat .num { font-family: 'Lora', serif; font-weight: 700; font-size: 1.3rem; color: var(--ink); }
-    .env-stat .lbl { font-size: 0.8rem; color: var(--ink-soft); }
-
-    /* Responsible AI panel */
-    .rai-card {
-        background-color: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-        padding: 20px 22px; margin-top: 28px;
-    }
-    .rai-card h4 { font-family: 'Lora', serif; margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
-    .rai-item { font-size: 0.88rem; color: var(--ink-soft); line-height: 1.6; margin-bottom: 10px; }
-    .rai-item b { color: var(--ink); }
-    </style>
-    """, unsafe_allow_html=True)
-
-st.markdown("""
-    <style>
-    :root {
-        --surface: #f7f9fb;
-        --panel: #ffffff;
-        --ink: #191c1e;
-        --ink-soft: #414750;
-        --outline: #727781;
-        --outline-soft: #c1c7d2;
-        --primary: #004275;
-        --primary-soft: #d2e4ff;
-        --secondary: #006a61;
-        --secondary-soft: #eaf6ee;
-        --warning: #b9791a;
-        --warning-soft: #fcf1de;
-        --critical: #ba1a1a;
-        --critical-soft: #ffdad6;
-        --sidebar: #2d3133;
-    }
-
-    [data-testid="stHeader"], #MainMenu, footer {
-        display: none;
-    }
-
-    html, body, .main, [data-testid="stAppViewContainer"] {
-        background: var(--surface);
-        color: var(--ink);
-        font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
-    }
-
-    [data-testid="stSidebar"] {
-        background: var(--sidebar);
-        border-right: 1px solid rgba(255,255,255,0.08);
-    }
-
-    [data-testid="stSidebar"] * {
-        color: #eff1f3;
-    }
-
-    [data-testid="stSidebar"] .stSelectbox label,
-    [data-testid="stSidebar"] .stRadio label,
-    [data-testid="stSidebar"] .stToggle label,
-    [data-testid="stSidebar"] .stCaption,
-    [data-testid="stSidebar"] .stMarkdown {
-        color: #eff1f3;
-    }
-
-    [data-testid="stSidebar"] .stButton > button {
-        background: var(--primary);
-        color: #fff;
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 12px;
-        padding: 0.8rem 1rem;
-        font-weight: 800;
-        width: 100%;
-    }
-
-    .app-title {
-        font-size: 2.35rem;
-        line-height: 1.05;
-        font-weight: 800;
-        color: var(--primary);
-        letter-spacing: -0.04em;
-        margin-bottom: 4px;
-    }
-
-    .app-subtitle {
-        color: var(--ink-soft);
-        font-size: 1rem;
-        line-height: 1.5;
-        margin-bottom: 14px;
-    }
-
-    .pipeline-wrap {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        margin: 8px 0 24px 0;
-        padding: 18px 20px;
-        flex-wrap: wrap;
-        background: var(--panel);
-        border: 1px solid var(--outline-soft);
-        border-radius: 14px;
-    }
-
-    .pipeline-step {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        color: var(--primary);
-        font-size: 0.94rem;
-        font-weight: 700;
-        flex: 1;
-        min-width: 170px;
-    }
-
-    .pipeline-step .num {
-        width: 38px;
-        height: 38px;
-        border-radius: 50%;
-        background: var(--primary);
-        color: #fff;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-weight: 800;
-    }
-
-    .pipeline-step.is-muted {
-        color: var(--ink-soft);
-    }
-
-    .pipeline-step.is-muted .num {
-        background: transparent;
-        color: var(--outline);
-        border: 2px solid var(--outline-soft);
-    }
-
-    .pipeline-arrow { color: var(--outline); font-size: 1.2rem; }
-
-    .status-banner {
-        border-radius: 16px;
-        padding: 20px 22px;
-        margin-bottom: 24px;
-        border: 1px solid;
-        display: flex;
-        justify-content: space-between;
-        gap: 18px;
-        align-items: center;
-    }
-
-    .status-banner.critical { background: var(--critical); border-color: var(--critical); color: #fff; }
-    .status-banner.ok { background: var(--secondary); border-color: var(--secondary); color: #fff; }
-    .status-headline { font-weight: 800; font-size: 1.2rem; margin-bottom: 4px; }
-    .status-sub { font-size: 0.94rem; opacity: 0.96; }
-
-    .answer-card {
-        background: var(--panel);
-        border: 1px solid var(--outline-soft);
-        border-radius: 14px;
-        padding: 18px 18px;
-        height: 100%;
-        min-height: 148px;
-        box-shadow: 0 2px 10px rgba(17, 24, 39, 0.03);
-    }
-
-    .answer-card .label {
-        font-size: 0.72rem;
-        color: var(--ink-soft);
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-bottom: 12px;
-    }
-
-    .answer-card .value {
-        font-size: 2rem;
-        font-weight: 800;
-        color: var(--primary);
-        line-height: 1.08;
-    }
-
-    .answer-card .footnote {
-        font-size: 0.8rem;
-        color: var(--ink-soft);
-        margin-top: 10px;
-    }
-
-    .answer-card.accent-critical { border-left: 4px solid var(--critical); }
-    .answer-card.accent-warning { border-left: 4px solid var(--warning); }
-    .answer-card.accent-ok { border-left: 4px solid var(--secondary); }
-    .answer-card.accent-info { border-left: 4px solid var(--primary); }
-
-    .why-card,
-    .action-card,
-    .env-card,
-    .rai-card,
-    .exec-card,
-    .exec-shell {
-        background: var(--panel);
-        border: 1px solid var(--outline-soft);
-        border-radius: 14px;
-    }
-
-    .why-card {
-        border-left: 4px solid var(--primary);
-        padding: 18px 20px;
-        margin-bottom: 16px;
-    }
-
-    .why-title { font-weight: 800; color: var(--ink); font-size: 1.05rem; margin-bottom: 10px; }
-    .why-evidence { font-size: 0.82rem; color: var(--ink-soft); background: var(--surface); padding: 8px 10px; border-radius: 8px; display: block; }
-    .confidence-tag { display: inline-block; background: var(--primary-soft); color: var(--primary); font-size: 0.78rem; font-weight: 800; padding: 4px 10px; border-radius: 999px; margin-bottom: 10px; }
-
-    .action-card {
-        padding: 18px 20px;
-        margin-bottom: 16px;
-    }
-
-    .action-card.priority-high { border-left: 4px solid var(--critical); }
-    .action-card.priority-medium { border-left: 4px solid var(--warning); }
-    .action-card.priority-low { border-left: 4px solid var(--secondary); }
-    .action-tag { font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; padding: 4px 10px; border-radius: 999px; }
-    .action-tag.high { background: var(--critical-soft); color: var(--critical); }
-    .action-tag.medium { background: var(--warning-soft); color: var(--warning); }
-    .action-tag.low { background: var(--primary-soft); color: var(--primary); }
-    .action-title { font-weight: 800; font-size: 1.02rem; margin: 10px 0 12px 0; }
-
-    .env-card {
-        background: var(--secondary-soft);
-        border: 1px solid var(--secondary);
-        padding: 20px 22px;
-        margin-bottom: 24px;
-    }
-
-    .env-card h4 { font-weight: 800; color: var(--secondary); margin: 0 0 12px 0; font-size: 1.05rem; }
-    .env-stat .num { font-weight: 800; font-size: 1.3rem; color: var(--ink); }
-    .env-stat .lbl { font-size: 0.8rem; color: var(--ink-soft); }
-
-    .rai-card {
-        padding: 20px 22px;
-        margin-top: 28px;
-    }
-
-    .rai-card h4 { font-weight: 800; margin-top: 0; border-bottom: 1px solid var(--outline-soft); padding-bottom: 10px; }
-
-    .exec-shell {
-        padding: 20px;
-        margin-bottom: 24px;
-    }
-
-    .exec-grid {
-        display: grid;
-        grid-template-columns: repeat(12, 1fr);
-        gap: 24px;
-    }
-
-    .exec-card {
-        padding: 18px;
-        height: 100%;
-    }
-
-    .exec-label {
-        color: var(--ink-soft);
-        font-size: 0.72rem;
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        margin-bottom: 10px;
-    }
-
-    .exec-value {
-        color: var(--primary);
-        font-size: 2rem;
-        font-weight: 800;
-        line-height: 1.05;
-    }
-
-    .exec-note {
-        color: var(--ink-soft);
-        font-size: 0.9rem;
-        line-height: 1.55;
-        margin-top: 10px;
-    }
-
-    div[data-testid="stMetricValue"] { font-size: 1.85rem; font-weight: 800; color: var(--primary); }
-    div[data-testid="stMetricLabel"] { color: var(--ink-soft); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.74rem; }
-    </style>
-""", unsafe_allow_html=True)
-
-# =============================================================================
-# CONSTANTS
-# =============================================================================
-LARGE_LEAK_DIAMETER_MM = 15.0    # above this estimated opening size, treat as a structural leak
-
-# =============================================================================
-# SIDEBAR — DATA INPUT & DETECTION CONTEXT
-# =============================================================================
-
-# Determine the directory where sample files are located
-# Use the app file location so Streamlit Cloud and local execution both find the CSVs.
-app_dir = Path(__file__).resolve().parent
-sample_files = {
-    "normal": [app_dir / "normal.csv", app_dir / "example_normal_day_2026-10-05.csv"],
-    "leak": [app_dir / "leak.csv"],
-    "event": [app_dir / "event.csv"],
-    "event_leak": [app_dir / "event_leak.csv"]
+APP_DIR = CURRENT_DIR
+SAMPLE_FILES = {
+    "normal": [APP_DIR / "normal.csv", APP_DIR / "example_normal_day_2026-10-05.csv"],
+    "event": [APP_DIR / "event.csv"],
 }
-MODEL_PATH = app_dir / "hydrosentinel_isolation_forest.joblib"
-FEEDBACK_PATH = app_dir / "feedback.csv"
-LOGS_PATH = app_dir / "logs.csv"
-
-if "analysis_requested" not in st.session_state:
-    st.session_state["analysis_requested"] = False
-if "analysis_target_signature" not in st.session_state:
-    st.session_state["analysis_target_signature"] = None
-if "uploaded_file_size" not in st.session_state:
-    st.session_state["uploaded_file_size"] = "No file"
-if "telemetry_file_bytes" not in st.session_state:
-    st.session_state["telemetry_file_bytes"] = None
-if "telemetry_file_name" not in st.session_state:
-    st.session_state["telemetry_file_name"] = None
-if "telemetry_file_signature" not in st.session_state:
-    st.session_state["telemetry_file_signature"] = None
+MODEL_PATH = APP_DIR / "hydrosentinel_isolation_forest.joblib"
+FEEDBACK_PATH = APP_DIR / "feedback.csv"
+LOGS_PATH = APP_DIR / "logs.csv"
 
 
-def handle_telemetry_upload_change():
-    """Reset analysis state when the telemetry uploader value changes."""
-    uploaded = st.session_state.get("telemetry_uploader")
-    if uploaded is None:
-        st.session_state["uploaded_file_size"] = "No file"
-        st.session_state["analysis_requested"] = False
-        st.session_state["analysis_target_signature"] = None
-        st.session_state["telemetry_file_bytes"] = None
-        st.session_state["telemetry_file_name"] = None
-        st.session_state["telemetry_file_signature"] = None
-        return
+def init_state() -> None:
+    defaults = {
+        "view_mode": "Operational",
+        "event_mode": False,
+        "source_mode": "Upload CSV",
+        "analysis_requested": False,
+        "analysis_result": None,
+        "analysis_error": None,
+        "uploaded_file_name": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-    file_bytes = uploaded.getvalue()
-    file_signature = f"{uploaded.name}:{uploaded.size}:{hashlib.sha256(file_bytes).hexdigest()[:12]}"
 
-    st.session_state["uploaded_file_size"] = uploaded.size
-    st.session_state["telemetry_file_bytes"] = file_bytes
-    st.session_state["telemetry_file_name"] = uploaded.name
-    st.session_state["telemetry_file_signature"] = file_signature
-    st.session_state["analysis_requested"] = True
-    st.session_state["analysis_target_signature"] = file_signature
-
-with st.sidebar:
-    st.subheader("📥 Download Samples")
-    try:
-        normal_file = find_sample_file(sample_files["normal"])
-        leak_file = find_sample_file(sample_files["leak"])
-        event_file = find_sample_file(sample_files["event"])
-        event_leak_file = find_sample_file(sample_files["event_leak"])
-        
-        if normal_file:
-            with open(normal_file, "rb") as f:
-                st.download_button("📥 Normal Day Data", f, "normal.csv")
-        else:
-            st.warning("Normal Day Data file not found in project")
-            
-        if leak_file:
-            with open(leak_file, "rb") as f:
-                st.download_button("⚠️ Leak Day Data", f, "leak.csv")
-        else:
-            st.warning("Leak Day Data file not found in project")
-            
-        if event_file:
-            with open(event_file, "rb") as f:
-                st.download_button("📈 Event Day Data", f, "event.csv")
-        else:
-            st.warning("Event Day Data file not found in project")
-            
-        if event_leak_file:
-            with open(event_leak_file, "rb") as f:
-                st.download_button("🚨 Event + Leak Day Data", f, "event_leak.csv")
-        else:
-            st.warning("Event + Leak Day Data file not found in project")
-    except Exception as e:
-        st.warning(f"Error loading sample files: {str(e)}")
-
-    st.markdown("---")
+def inject_styles() -> None:
     st.markdown(
-        "<div class='serif' style='font-size:1.4rem; font-weight:700; color:#146C5F; margin-bottom:0;'>💧 HydroSentinel AI</div>"
-        "<div style='color:#4B5D59; font-size:0.85rem; margin-bottom:16px;'>Water Infrastructure Decision Support</div>",
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap');
+
+        :root {
+            --bg: #f8f9ff;
+            --panel: #ffffff;
+            --ink: #121c28;
+            --ink-soft: #414750;
+            --outline: #c1c7d2;
+            --primary: #004275;
+            --primary-2: #005a9c;
+            --teal: #006a61;
+            --teal-soft: #e3f0ec;
+            --amber: #d97706;
+            --amber-soft: #fcf1de;
+            --red: #dc2626;
+            --red-soft: #ffdad6;
+        }
+
+        html, body, .main, [data-testid="stAppViewContainer"] {
+            background: var(--bg);
+            color: var(--ink);
+            font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+        }
+
+        [data-testid="stHeader"], #MainMenu, footer { display: none; }
+
+        [data-testid="stSidebar"] {
+            background: #ffffff;
+            border-right: 1px solid rgba(193,199,210,0.45);
+        }
+
+        [data-testid="stSidebar"] * { color: var(--ink); }
+
+        [data-testid="stSidebar"] .stButton > button {
+            width: 100%; background: var(--primary); color: #fff; border-radius: 12px;
+            border: 1px solid rgba(0,66,117,0.2); padding: 0.85rem 1rem; font-weight: 700;
+        }
+
+        [data-testid="stSidebar"] .stButton > button:hover { background: var(--primary-2); }
+
+        .brand { margin-bottom: 1rem; }
+        .brand h1 {
+            font-size: 2rem; line-height: 1.0; font-weight: 800; color: var(--primary);
+            letter-spacing: -0.04em; margin: 0;
+        }
+        .brand p { margin: 0.5rem 0 0; color: var(--ink-soft); font-size: 0.98rem; }
+
+        .sidebar-section-title {
+            font-size: 0.72rem; letter-spacing: 0.11em; text-transform: uppercase;
+            color: var(--ink-soft); font-weight: 800; margin: 1.25rem 0 0.55rem;
+        }
+
+        .sidebar-card {
+            border: 1px solid rgba(193,199,210,0.7); border-radius: 14px; padding: 0.9rem;
+            background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+        }
+        .sidebar-card.event-on { border-left: 4px solid var(--teal); background: #f4fbf9; }
+        .sidebar-card.event-off { border-left: 4px solid var(--outline); background: #fafbfd; }
+
+        .sidebar-chip {
+            display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.22rem 0.7rem;
+            border-radius: 999px; font-size: 0.72rem; font-weight: 800; text-transform: uppercase;
+            letter-spacing: 0.07em;
+        }
+        .chip-primary { background: #dbeafe; color: var(--primary); }
+        .chip-success { background: var(--teal-soft); color: var(--teal); }
+        .chip-warning { background: var(--amber-soft); color: var(--amber); }
+        .chip-danger { background: var(--red-soft); color: var(--red); }
+        .chip-muted { background: #edf2f7; color: #5b6471; }
+
+        .hero-title {
+            font-size: 2.2rem; line-height: 1.05; font-weight: 800; color: var(--primary);
+            letter-spacing: -0.04em; margin-bottom: 0.35rem;
+        }
+        .hero-subtitle {
+            color: var(--ink-soft); font-size: 1rem; line-height: 1.55; margin-bottom: 1rem;
+        }
+
+        .switcher {
+            background: #eef3fb; padding: 0.35rem; border-radius: 14px; display: inline-flex;
+            border: 1px solid rgba(193,199,210,0.55);
+        }
+
+        .banner-critical, .banner-safe {
+            border-radius: 18px; padding: 1rem 1.15rem; margin-bottom: 1.15rem; display: flex;
+            align-items: center; justify-content: space-between; gap: 1rem;
+        }
+        .banner-critical { background: var(--red); color: #fff; }
+        .banner-safe { background: var(--teal); color: #fff; }
+        .banner-title { font-size: 1.15rem; font-weight: 800; margin: 0; }
+        .banner-copy { margin: 0.15rem 0 0; opacity: 0.96; line-height: 1.45; }
+        .banner-action {
+            background: rgba(255,255,255,0.16); color: #fff; border: 1px solid rgba(255,255,255,0.26);
+            border-radius: 12px; padding: 0.7rem 1rem; font-weight: 800; white-space: nowrap;
+        }
+
+        .stepper {
+            display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.9rem;
+            align-items: center; margin: 1rem 0 1.15rem;
+        }
+        .step { display: flex; align-items: center; gap: 0.85rem; min-height: 72px; }
+        .step-badge {
+            width: 52px; height: 52px; border-radius: 999px; display: flex; align-items: center;
+            justify-content: center; font-weight: 800; font-size: 1.05rem; color: var(--primary);
+            background: #e7eff9;
+        }
+        .step.active .step-badge { background: var(--primary-2); color: #fff; }
+        .step .meta {
+            margin: 0; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.08em;
+            font-size: 0.7rem; font-weight: 800;
+        }
+        .step .label { margin: 0.1rem 0 0; font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em; color: var(--ink); }
+        .step.dimmed { opacity: 0.38; }
+
+        .kpi-grid {
+            display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1rem;
+        }
+        .kpi-card {
+            background: var(--panel); border: 1px solid rgba(193,199,210,0.8); border-radius: 18px;
+            padding: 1.1rem 1.1rem 1rem; min-height: 148px; display: flex; flex-direction: column; justify-content: space-between;
+        }
+        .kpi-card .title {
+            font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.09em;
+            color: var(--ink-soft); margin-bottom: 0.6rem;
+        }
+        .kpi-card .value {
+            font-size: 2rem; font-weight: 800; line-height: 1.04; color: var(--primary); letter-spacing: -0.04em;
+        }
+        .kpi-card .value.small { font-size: 1.45rem; }
+        .kpi-card .foot { margin-top: 0.55rem; font-size: 0.82rem; color: var(--ink-soft); }
+        .accent-critical { border-left: 4px solid var(--red); }
+        .accent-warning { border-left: 4px solid var(--amber); }
+        .accent-ok { border-left: 4px solid var(--teal); }
+        .accent-info { border-left: 4px solid var(--primary); }
+
+        .panel {
+            background: var(--panel); border: 1px solid rgba(193,199,210,0.8); border-radius: 18px; padding: 1rem;
+        }
+        .panel h3 { margin: 0 0 0.2rem; font-size: 1.15rem; font-weight: 800; color: var(--ink); }
+        .panel .sub { margin: 0 0 0.9rem; color: var(--ink-soft); font-size: 0.92rem; }
+
+        .why-box {
+            background: linear-gradient(180deg, #eef6ff 0%, #f8fbff 100%);
+            border-left: 4px solid var(--primary); border-radius: 18px; padding: 1rem; height: 100%;
+        }
+        .note-box {
+            background: #dff6f1; border: 1px solid rgba(0,106,97,0.2); border-radius: 18px; padding: 1rem; height: 100%;
+        }
+        .why-box .title, .note-box .title, .gov-box .title {
+            margin: 0 0 0.7rem; font-size: 0.78rem; font-weight: 800; text-transform: uppercase;
+            letter-spacing: 0.09em; color: var(--ink-soft);
+        }
+        .why-box .headline { margin: 0 0 0.8rem; font-size: 1.45rem; font-weight: 800; color: var(--ink); line-height: 1.2; }
+        .why-box .body, .note-box .body, .gov-box .body { margin: 0; color: var(--ink); line-height: 1.6; }
+        .gov-box {
+            background: var(--panel); border: 1px solid rgba(193,199,210,0.8); border-radius: 18px; padding: 1rem;
+        }
+
+        .recommend-card {
+            background: var(--panel); border: 1px solid rgba(193,199,210,0.8); border-radius: 18px; padding: 1rem; height: 100%;
+        }
+        .recommend-card.high { border-left: 4px solid var(--red); }
+        .recommend-card.medium { border-left: 4px solid var(--amber); }
+        .recommend-card.low { border-left: 4px solid var(--teal); }
+        .recommend-card .badge {
+            display: inline-flex; align-items: center; padding: 0.25rem 0.65rem; border-radius: 999px; font-size: 0.72rem;
+            font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.8rem;
+        }
+        .recommend-card h4 { margin: 0 0 0.6rem; font-size: 1.02rem; font-weight: 800; color: var(--ink); }
+        .recommend-card .row { margin: 0 0 0.35rem; color: var(--ink-soft); line-height: 1.5; font-size: 0.92rem; }
+        .recommend-card .row b { color: var(--ink); }
+
+        .ai-notice {
+            margin-top: 1rem; background: #f3f7fb; border: 1px solid rgba(193,199,210,0.8); border-radius: 18px; padding: 1rem 1rem 0.95rem;
+        }
+        .ai-notice h3 { margin: 0 0 0.7rem; font-size: 1.02rem; font-weight: 800; }
+        .ai-notice p { margin: 0 0 0.55rem; color: var(--ink-soft); line-height: 1.6; }
+
+        .exec-hero {
+            background: linear-gradient(135deg, #004275 0%, #005a9c 100%); color: #fff; border-radius: 22px;
+            padding: 1.7rem 1.8rem; margin-bottom: 1rem; position: relative; overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.15);
+        }
+        .exec-hero h2 { margin: 0 0 0.5rem; font-size: 2.4rem; line-height: 1.05; font-weight: 800; letter-spacing: -0.04em; }
+        .exec-hero p { margin: 0; max-width: 760px; font-size: 1.05rem; line-height: 1.55; opacity: 0.96; }
+        .exec-hero .action {
+            background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); border-radius: 16px;
+            padding: 0.95rem 1.25rem; font-weight: 800; color: #fff; white-space: nowrap;
+        }
+
+        .exec-card {
+            background: var(--panel); border: 1px solid rgba(193,199,210,0.8); border-radius: 18px; padding: 1rem; height: 100%;
+        }
+        .exec-card .label {
+            color: var(--ink-soft); font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 0.6rem;
+        }
+        .exec-card .value { color: var(--primary); font-size: 2rem; font-weight: 800; letter-spacing: -0.04em; line-height: 1.05; }
+        .exec-card .value.small { font-size: 1.4rem; }
+        .exec-card .desc { margin-top: 0.55rem; color: var(--ink-soft); line-height: 1.55; }
+
+        .divider { height: 1px; background: rgba(193,199,210,0.8); margin: 0.9rem 0; }
+
+        div[data-testid="stMetricValue"] {
+            font-size: 1.8rem; font-weight: 800; color: var(--primary);
+        }
+        div[data-testid="stMetricLabel"] {
+            color: var(--ink-soft); font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; font-size: 0.72rem;
+        }
+
+        @media (max-width: 1180px) {
+            .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .stepper { grid-template-columns: 1fr 1fr; }
+        }
+        </style>
+        """,
         unsafe_allow_html=True,
     )
-    st.caption("USAII Global AI Hackathon 2026")
-    st.markdown("---")
-
-    st.subheader("📥 Your Data")
-    st.caption("HydroSentinel trains from the bundled normal-day and event-day no-leak samples.")
-
-    mode = st.radio(
-        "How should we get sensor readings?",
-        ["Upload a CSV file", "Run a live demo (simulated)"],
-        help="In a real school, this data would stream automatically from smart water meters. For this prototype, use a CSV or watch the simulated demo.",
-    )
-
-    event_mode = st.toggle(
-        "Event Mode",
-        value=False,
-        help="Enable this when the school is hosting events. HydroSentinel will train with event-day no-leak samples and apply event-aware scoring.",
-    )
-    if event_mode:
-        st.caption("Event Mode is ON: model context includes event-day patterns.")
-    else:
-        st.caption("Event Mode is OFF: model focuses on standard school-day usage patterns.")
-
-    view_mode = st.selectbox(
-        "Dashboard View",
-        ["Operational clarity", "Executive summary"],
-        help="Operational clarity is optimized for technicians; executive summary is optimized for leadership updates.",
-    )
-
-    uploaded_file = None
-    stream_trigger = False
-    if mode == "Upload a CSV file":
-        uploaded_file = st.file_uploader(
-            "Upload campus water readings",
-            type=["csv"],
-            key="telemetry_uploader",
-            on_change=handle_telemetry_upload_change,
-        )
-        st.caption("Needs columns: Timestamp, Flow_Rate_LPM, Avg_Pressure_PSI, Occupancy_Status")
-    else:
-        st.caption("This simulates a normal morning that develops into a leak later in the day.")
-        stream_trigger = st.button("▶ Run live demo")
-
-    st.markdown("---")
-    st.subheader("🤖 Detection Model")
-    st.caption("HydroSentinel trains a diagnostic model bundle on labeled telemetry, then estimates leak type, probability, and loss for each new row.")
-
-    st.markdown("---")
-    st.markdown(
-        "<span style='color:#4B5D59; font-size:0.85rem;'>Built by</span><br>"
-        "<b style='color:#146C5F; font-size:1.05rem;'>Team EAT</b>",
-        unsafe_allow_html=True,
-    )
-
-# =============================================================================
-# HEADER
-# =============================================================================
-st.markdown('<div class="app-title">HydroSentinel AI</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="app-subtitle">Intelligent water security for schools. Operational and executive views keep maintenance teams and leadership aligned on leak risk, impact, and response.</div>',
-    unsafe_allow_html=True,
-)
-
-st.markdown("""
-    <div class="pipeline-wrap">
-        <div class="pipeline-step"><span class="num">1</span> Sensor Readings</div>
-        <div class="pipeline-arrow">→</div>
-        <div class="pipeline-step"><span class="num">2</span> Pattern Analysis</div>
-        <div class="pipeline-arrow">→</div>
-        <div class="pipeline-step is-muted"><span class="num">3</span> Environmental Insight</div>
-        <div class="pipeline-arrow">→</div>
-        <div class="pipeline-step is-muted"><span class="num">4</span> Recommended Action</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("""
-    <div class="context-note">
-        <b>About this system:</b> HydroSentinel AI is a decision-support system for school water infrastructure,
-        built to give maintenance teams clear, auditable evidence for acting on leaks by learning the normal
-        relationship between flow, pressure, and occupancy from labeled telemetry with a diagnostic model bundle. This version reads water-use data from
-        a CSV file (or a simulated live demo) to stand in for direct sensor integration, which wasn't available to
-        test during development. In a real school deployment, HydroSentinel AI would connect directly to smart water
-        meters and pressure sensors, watching them continuously day and night to support the maintenance team's
-        day-to-day decisions.
-    </div>
-    """, unsafe_allow_html=True)
 
 
-# =============================================================================
-# HELPERS
-# =============================================================================
-def build_analysis_id(df):
-    """Build a stable identifier for one analysis run.
-
-    Args:
-        df: Clean input telemetry DataFrame.
-
-    Returns:
-        A short hash string used to deduplicate log entries.
-    """
-    signature_df = df[REQUIRED_COLUMNS].copy()
-    signature_df["Timestamp"] = signature_df["Timestamp"].astype(str)
-    digest = hashlib.sha256(signature_df.to_csv(index=False).encode("utf-8")).hexdigest()
-    return digest[:16]
-
-
-def append_record(path, record, unique_key=None):
-    """Append one record to a CSV file with optional deduplication.
-
-    Args:
-        path: Destination CSV path.
-        record: Dictionary to serialize as one CSV row.
-        unique_key: Optional column name used to prevent duplicate writes.
-
-    Returns:
-        True when a row is written, otherwise False if deduplicated.
-    """
-    record_df = pd.DataFrame([record])
+def append_csv_record(path: Path, record: dict, unique_key: str | None = None) -> bool:
+    frame = pd.DataFrame([record])
     if path.exists():
-        if unique_key is not None:
+        if unique_key and unique_key in frame.columns:
             existing = pd.read_csv(path)
             if unique_key in existing.columns and str(record[unique_key]) in existing[unique_key].astype(str).values:
                 return False
-        record_df.to_csv(path, mode="a", header=False, index=False)
+        frame.to_csv(path, mode="a", header=False, index=False)
         return True
 
-    record_df.to_csv(path, index=False)
+    frame.to_csv(path, index=False)
     return True
 
 
-def log_analysis_result(analysis_id, result, training_summary, target_summary):
-    """Persist one analysis summary row to logs.csv.
+def build_analysis_id(df: pd.DataFrame) -> str:
+    canonical = df[["Timestamp", "Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Status"]].copy()
+    canonical["Timestamp"] = canonical["Timestamp"].astype(str)
+    return hashlib.sha256(canonical.to_csv(index=False).encode("utf-8")).hexdigest()[:16]
 
-    Args:
-        analysis_id: Stable identifier for the analyzed dataset.
-        result: Metrics dictionary returned by the ML engine.
-        training_summary: Validation summary for the training dataset.
-        target_summary: Validation summary for the analyzed dataset.
 
-    Returns:
-        True when a new log row is written, otherwise False.
-    """
+def save_feedback(analysis_id: str, verdict: str, result: dict) -> bool:
     top_timestamp = ""
-    if result.get("has_leak"):
+    if result.get("has_leak") and result.get("top_row") is not None:
         top_timestamp = str(result["top_row"]["Timestamp"])
 
-    log_record = {
+    feedback_record = {
+        "submitted_at": pd.Timestamp.now().isoformat(),
+        "analysis_id": analysis_id,
+        "feedback": verdict,
+        "predicted_leak": bool(result.get("has_leak")),
+        "confidence": float(result.get("confidence", 0.0)),
+        "top_timestamp": top_timestamp,
+    }
+    return append_csv_record(FEEDBACK_PATH, feedback_record)
+
+
+def log_analysis_result(analysis_id: str, result: dict, training_summary: dict, target_summary: dict) -> bool:
+    top_timestamp = ""
+    if result.get("has_leak") and result.get("top_row") is not None:
+        top_timestamp = str(result["top_row"]["Timestamp"])
+
+    record = {
         "logged_at": pd.Timestamp.now().isoformat(),
         "analysis_id": analysis_id,
-        "has_leak": bool(result["has_leak"]),
-        "anomaly_rows": int(len(result["anomalies"])),
+        "has_leak": bool(result.get("has_leak")),
+        "anomaly_rows": int(len(result.get("anomalies", []))),
         "confidence": float(result.get("confidence", 0.0)),
         "leak_lpm": float(result.get("leak_lpm", 0.0)),
         "total_liters": float(result.get("total_liters", 0.0)),
@@ -705,714 +334,540 @@ def log_analysis_result(analysis_id, result, training_summary, target_summary):
         "target_valid_rows": int(target_summary.get("valid_rows", 0)),
         "target_invalid_rows": int(target_summary.get("invalid_rows", 0)),
     }
-    return append_record(LOGS_PATH, log_record, unique_key="analysis_id")
+    return append_csv_record(LOGS_PATH, record, unique_key="analysis_id")
 
 
-def save_feedback(analysis_id, verdict, result):
-    """Persist one user verdict for an alert into feedback.csv.
-
-    Args:
-        analysis_id: Stable identifier for the analyzed dataset.
-        verdict: User-provided review label such as correct_alert.
-        result: Metrics dictionary returned by the ML engine.
-
-    Returns:
-        True when the feedback row is written.
-    """
-    top_timestamp = ""
-    if result.get("has_leak"):
-        top_timestamp = str(result["top_row"]["Timestamp"])
-
-    feedback_record = {
-        "submitted_at": pd.Timestamp.now().isoformat(),
-        "analysis_id": analysis_id,
-        "feedback": verdict,
-        "predicted_leak": bool(result["has_leak"]),
-        "confidence": float(result.get("confidence", 0.0)),
-        "top_timestamp": top_timestamp,
-    }
-    return append_record(FEEDBACK_PATH, feedback_record)
-
-
-def load_training_dataframe():
-    """Load and validate the training dataset used by the UI.
-
-    Returns:
-        A tuple of (training_dataframe, validation_summary).
-    """
-    default_training_groups = [sample_files["normal"], sample_files["event"]]
-    default_training_df = load_default_training_data(default_training_groups)
-    if default_training_df is None:
-        raise FileNotFoundError("No bundled no-leak training samples are available.")
-    return validate_and_clean_data(default_training_df, "default training data")
-
-
-def load_target_dataframe(uploaded_file):
-    """Load and validate an uploaded telemetry file from the UI.
-
-    Args:
-        uploaded_file: Streamlit uploaded file object.
-
-    Returns:
-        A tuple of (target_dataframe, validation_summary).
-    """
-    raw_df = pd.read_csv(io.BytesIO(uploaded_file))
-    return validate_and_clean_data(raw_df, "uploaded sensor data")
-
-
-def severity_level(leak_lpm):
-    """Map leak intensity to a display severity label.
-
-    Args:
-        leak_lpm: Estimated leak rate in liters per minute.
-
-    Returns:
-        A tuple of (label, css_class).
-    """
+def severity_level(leak_lpm: float) -> tuple[str, str]:
     if leak_lpm < 12:
         return "Minor", "warning"
-    elif leak_lpm <= 35:
+    if leak_lpm <= 35:
         return "Moderate", "warning"
-    else:
-        return "Severe", "critical"
+    return "Severe", "critical"
 
 
-def significance_level(total_liters):
-    """Map cumulative water loss to an impact label.
-
-    Args:
-        total_liters: Total anomalous liters observed in the dataset.
-
-    Returns:
-        A human-readable impact tier string.
-    """
+def significance_level(total_liters: float) -> str:
     if total_liters < 300:
         return "Low"
-    elif total_liters < 1500:
+    if total_liters < 1500:
         return "Moderate"
-    elif total_liters < 4000:
+    if total_liters < 4000:
         return "High"
+    return "Severe"
+
+
+def generate_demo_data(event_mode: bool) -> pd.DataFrame:
+    rng = np.random.default_rng(42)
+    timestamps = pd.date_range("2026-06-18 08:00:00", periods=12, freq="h")
+    rows = []
+    for idx, timestamp in enumerate(timestamps):
+        if idx < 5:
+            status = "Class_Hours"
+            flow = 14.7 + rng.normal(0, 0.7)
+            pressure = 52.0 + rng.normal(0, 0.6)
+        elif idx < 8:
+            status = "Event" if event_mode else "Class_Hours"
+            flow = (18.0 if event_mode else 16.0) + rng.normal(0, 0.8)
+            pressure = (50.2 if event_mode else 51.2) + rng.normal(0, 0.6)
+        else:
+            status = "After_Hours"
+            flow = 14.5 + (22 if idx >= 10 else 10) + rng.normal(0, 1.0)
+            pressure = 52.0 - (11 if idx >= 10 else 4) + rng.normal(0, 0.8)
+
+        rows.append(
+            {
+                "Timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                "Flow_Rate_LPM": round(max(flow, 0.1), 1),
+                "Avg_Pressure_PSI": round(max(pressure, 1.0), 1),
+                "Occupancy_Status": status,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def load_target_dataframe(source_mode: str, uploaded_file, event_mode: bool) -> tuple[pd.DataFrame, dict]:
+    if source_mode == "Live Demo":
+        raw_df = generate_demo_data(event_mode)
     else:
-        return "Severe"
+        if uploaded_file is None:
+            raise ValueError("Please upload a CSV file before analyzing.")
+        raw_df = pd.read_csv(io.BytesIO(uploaded_file.getvalue()))
+    return validate_and_clean_data(raw_df, "analysis data")
 
 
-def probability_status(probability):
-    """Convert leak probability into a color-coded status label.
-
-    Args:
-        probability: Maximum leak probability percentage.
-
-    Returns:
-        A tuple of (status_label, css_color).
-    """
-    if probability < 35:
-        return "Stable", "#3F8F5F"
-    elif probability < 70:
-        return "Needs Review", "#B9791A"
-    return "High Risk", "#B03A2E"
+def load_training_dataframe(event_mode: bool) -> tuple[pd.DataFrame, dict]:
+    training_df = load_training_labels_for_mode(SAMPLE_FILES["normal"], SAMPLE_FILES["event"], event_mode=event_mode)
+    return training_df, training_df.attrs.get("validation_summary", {})
 
 
-def build_recommendations(res):
-    """Generate recommendations from the classifier's predicted leak type."""
-    leak_type = str(res.get("leak_type", "")).strip() or "fixture_leak"
-    leak_type_label = leak_type.replace("_", " ").title()
-    confidence = float(res.get("leak_type_confidence", 0.0))
-    loss_lpm = float(res.get("leak_lpm", 0.0))
+def build_recommendations(result: dict) -> list[dict]:
+    leak_type = str(result.get("leak_type", "fixture_leak"))
+    label = leak_type.replace("_", " ").title()
+    confidence = float(result.get("leak_type_confidence", 0.0))
+    leak_lpm = float(result.get("leak_lpm", 0.0))
 
     templates = {
-        "fixture_leak": {
-            "priority_1": {
-                "tag": "Priority 1 — Critical", "tag_class": "high",
-                "title": "Inspect the closest restroom fixture and stop the running outlet",
-                "reason": f"The classifier predicts a {leak_type_label} pattern with {confidence:.0f}% confidence, which fits a fixture that is not sealing properly.",
-                "location": "Nearby restroom fixture or faucet assembly.",
-                "fix": "Check the flush valve, flapper, or faucet cartridge and replace the worn part.",
-                "why_priority": f"The regressor estimates about {loss_lpm:.1f} L/min of loss, so stopping the fixture now prevents continued waste.",
-            },
-            "priority_2": {
-                "tag": "Priority 2 — Important", "tag_class": "medium",
-                "title": "Validate the valve seal after the first repair",
-                "reason": "Fixture leaks often return if the seal or actuator is not checked after the repair.",
-                "location": "The same fixture that produced the flagged reading.",
-                "fix": "Run a follow-up flow check after the part is replaced to confirm the leak has stopped.",
-                "why_priority": "A second check prevents a partial repair from being mistaken for a full fix.",
-            },
-            "priority_3": {
-                "tag": "Priority 3 — Preventive", "tag_class": "low",
-                "title": "Inspect nearby fixtures on the same branch line",
-                "reason": "A single fixture failure often indicates wear across the same branch line.",
-                "location": "Neighboring restrooms or sinks on the same branch.",
-                "fix": "Inspect the next closest fixtures for slow drips or poor shutoff.",
-                "why_priority": "Catching a second worn fixture now reduces the chance of another alert later.",
-            },
-        },
-        "valve_failure": {
-            "priority_1": {
-                "tag": "Priority 1 — Critical", "tag_class": "high",
-                "title": "Send a technician to repair the stuck valve",
-                "reason": f"The classifier predicts a {leak_type_label} pattern with {confidence:.0f}% confidence, which often shows up as sustained extra flow.",
-                "location": "Branch shutoff or control valve serving the flagged area.",
-                "fix": "Inspect the valve actuator, spring, and seat; replace the valve if it does not close cleanly.",
-                "why_priority": f"The regressor estimates about {loss_lpm:.1f} L/min of loss, which is enough to justify immediate repair.",
-            },
-            "priority_2": {
-                "tag": "Priority 2 — Important", "tag_class": "medium",
-                "title": "Isolate the affected zone until the valve is fixed",
-                "reason": "Isolating the zone reduces waste while preserving service elsewhere in the building.",
-                "location": "Zone valve upstream of the failed control point.",
-                "fix": "Close the nearest upstream valve, then verify that the model score drops after repair.",
-                "why_priority": "This limits water loss without disrupting the entire school.",
-            },
-            "priority_3": {
-                "tag": "Priority 3 — Preventive", "tag_class": "low",
-                "title": "Review other valves on the same maintenance cycle",
-                "reason": "A valve failure can be a sign of aging components in the same system.",
-                "location": "Other branch valves in the same wing.",
-                "fix": "Schedule inspections for nearby valves during the next maintenance window.",
-                "why_priority": "Preventive checks reduce repeated failures later in the term.",
-            },
-        },
-        "mainline_break": {
-            "priority_1": {
-                "tag": "Priority 1 — Critical", "tag_class": "high",
-                "title": "Shut off the main line and call emergency plumbing support",
-                "reason": f"The classifier predicts a {leak_type_label} pattern with {confidence:.0f}% confidence, which points to a high-impact structural failure.",
-                "location": "Main supply line, underground run, or primary riser.",
-                "fix": "Close the main valve and schedule immediate pipe location and repair.",
-                "why_priority": f"The regressor estimates about {loss_lpm:.1f} L/min of loss, which can scale quickly if left running.",
-            },
-            "priority_2": {
-                "tag": "Priority 2 — Important", "tag_class": "medium",
-                "title": "Mark the affected line and isolate the zone",
-                "reason": "A main line break should be isolated so the repair team can work safely.",
-                "location": "Main distribution line feeding the affected wing.",
-                "fix": "Keep the isolated section closed until pressure tests confirm the repair.",
-                "why_priority": "This helps protect the rest of the system from further damage.",
-            },
-            "priority_3": {
-                "tag": "Priority 3 — Preventive", "tag_class": "low",
-                "title": "Review pressure history and nearby pipe joints",
-                "reason": "Large breaks often follow long-term stress at the same pipe section.",
-                "location": "Adjacencies around the failed run.",
-                "fix": "Inspect history logs for repeated pressure drops and replace weak couplings.",
-                "why_priority": "Preventive checks reduce repeat breaks after the main repair.",
-            },
-        },
+        "fixture_leak": (
+            "Inspect the nearest fixture or valve assembly",
+            f"The classifier predicts {label} with {confidence:.0f}% confidence.",
+            "Check flappers, cartridges, and shutoff seals. Run a follow-up flow check after repair.",
+        ),
+        "valve_failure": (
+            "Isolate the affected valve branch",
+            f"The classifier predicts {label} with {confidence:.0f}% confidence.",
+            "Inspect actuator, spring, and seat. Confirm the valve closes fully after repair.",
+        ),
+        "mainline_break": (
+            "Escalate to urgent plumbing response",
+            f"The classifier predicts {label} with {confidence:.0f}% confidence.",
+            "Shut the affected section, inspect the main supply line, and repair immediately.",
+        ),
     }
-
-    template = templates.get(leak_type, templates["fixture_leak"])
-    return [template["priority_1"], template["priority_2"], template["priority_3"]]
-
-
-def generate_demo_row(hour, baseline_flow, inject_leak=False):
-    """Generate one simulated telemetry row for the Streamlit live demo.
-
-    Args:
-        hour: Integer hour used in the synthetic timestamp.
-        baseline_flow: Expected baseline flow value.
-        inject_leak: Whether to simulate a leak pattern for this row.
-
-    Returns:
-        A dictionary representing one telemetry row.
-    """
-    timestamp = f"2026-06-17 {hour:02d}:00:00"
-    status = "Class_Hours" if 8 <= hour <= 15 else "After_Hours"
-    if inject_leak and hour >= 12:
-        flow = baseline_flow + np.random.uniform(35.0, 50.0)
-        pressure = np.random.uniform(32.0, 38.0)
-    else:
-        flow = baseline_flow + np.random.uniform(-2.0, 2.0)
-        pressure = np.random.uniform(50.0, 55.0)
-    return {"Timestamp": timestamp, "Flow_Rate_LPM": round(flow, 1), "Avg_Pressure_PSI": round(pressure, 1), "Occupancy_Status": status}
+    first, second, third = templates.get(leak_type, templates["fixture_leak"])
+    return [
+        {"tag": "Priority 1", "tag_class": "high", "title": first, "reason": second, "location": "Flagged zone or nearest control point", "fix": third, "why": f"The model estimates {leak_lpm:.1f} L/min of loss, so this is the fastest way to stop waste."},
+        {"tag": "Priority 2", "tag_class": "medium", "title": "Verify the repair with a second reading", "reason": "Prevent partial fixes from being mistaken for full resolution.", "location": "Same branch or fixture.", "fix": "Repeat the telemetry check after the corrective action.", "why": "A confirmation pass reduces false closure on unresolved leaks."},
+        {"tag": "Priority 3", "tag_class": "low", "title": "Inspect neighboring fixtures or joints", "reason": "Wear often appears in nearby components after one failure.", "location": "Adjacent restrooms or branch lines.", "fix": "Review for slow drips or pressure instability nearby.", "why": "Preventive checks reduce repeat maintenance later in the term."},
+    ]
 
 
-# =============================================================================
-# LOAD DATA
-# =============================================================================
-target_df = None
-training_df = None
-training_summary = None
-target_summary = None
-results_placeholder = st.empty()
-upload_mode_active = mode == "Upload a CSV file"
-upload_ready = upload_mode_active and uploaded_file is not None
-current_upload_signature = None
+def render_sidebar() -> tuple[str, bool, str, object | None, bool]:
+    with st.sidebar:
+        st.markdown(
+            """
+            <div class="brand">
+                <h1>HydroSentinel AI</h1>
+                <p>Precision maintenance for school water infrastructure</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-if upload_ready:
-    if st.session_state.get("telemetry_file_bytes") is None:
-        handle_telemetry_upload_change()
-    current_upload_signature = st.session_state.get("telemetry_file_signature")
-    if st.session_state.get("analysis_target_signature") != current_upload_signature:
-        st.session_state["analysis_requested"] = True
-        st.session_state["analysis_target_signature"] = current_upload_signature
+        st.markdown('<div class="sidebar-section-title">Data Source</div>', unsafe_allow_html=True)
+        source_mode = st.radio(
+            "Data Source",
+            ["Upload CSV", "Live Demo"],
+            label_visibility="collapsed",
+            key="source_mode_radio",
+        )
 
-analyze_clicked = False
-if upload_mode_active:
-    analyze_clicked = st.button("Analyze", key="analyze_uploaded_file", disabled=not upload_ready)
-    if analyze_clicked and current_upload_signature is not None:
-        st.session_state["analysis_requested"] = True
-        st.session_state["analysis_target_signature"] = current_upload_signature
+        uploaded_file = None
+        if source_mode == "Upload CSV":
+            uploaded_file = st.file_uploader(
+                "Upload water telemetry CSV",
+                type=["csv"],
+                label_visibility="collapsed",
+                key="telemetry_uploader",
+            )
+            if uploaded_file is not None:
+                st.session_state["uploaded_file_name"] = uploaded_file.name
 
-should_run_upload_analysis = (
-    upload_ready
-    and st.session_state.get("analysis_requested", False)
-    and st.session_state.get("analysis_target_signature") == current_upload_signature
-)
+        st.markdown('<div class="sidebar-section-title">Event Mode</div>', unsafe_allow_html=True)
+        st.session_state["event_mode"] = st.toggle(
+            "Event Mode",
+            value=bool(st.session_state["event_mode"]),
+            help="Enable this for assemblies, sports days, celebrations, and other planned school events.",
+        )
 
-try:
-    training_df = load_training_labels_for_mode(
-        sample_files["normal"],
-        sample_files["event"],
-        event_mode=event_mode,
-    )
-    training_summary = training_df.attrs.get("validation_summary", {})
-except Exception as e:
-    st.error(f"We couldn't prepare the diagnostic training data: {e}")
+        event_card_class = "event-on" if st.session_state["event_mode"] else "event-off"
+        event_label = "ON" if st.session_state["event_mode"] else "OFF"
+        event_copy = (
+            "Event-aware analysis is active. Legitimate crowd-driven usage is interpreted with event context."
+            if st.session_state["event_mode"]
+            else "Standard school-day usage is the default. Turn Event Mode on when event traffic is expected."
+        )
+        st.markdown(
+            f"""
+            <div class="sidebar-card {event_card_class}">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:0.75rem; margin-bottom:0.45rem;">
+                    <div style="font-weight:800;">Event Mode</div>
+                    <span class="sidebar-chip {'chip-success' if st.session_state['event_mode'] else 'chip-muted'}">{event_label}</span>
+                </div>
+                <div style="color:#4b5563; line-height:1.55; font-size:0.92rem;">{event_copy}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-if upload_mode_active and uploaded_file is None:
-    st.info("Upload a telemetry CSV file to start the analysis.")
+        st.markdown('<div class="sidebar-section-title">Analysis</div>', unsafe_allow_html=True)
+        if st.button("Analyze", use_container_width=True):
+            st.session_state["analysis_requested"] = True
 
-if upload_ready:
-    st.success(f"Loaded file: {st.session_state.get('telemetry_file_name', uploaded_file.name)}")
-    if not should_run_upload_analysis:
-        st.info("Click Analyze to start processing the uploaded telemetry file.")
-    results_placeholder.empty()
+        st.markdown('<div class="sidebar-section-title">Action</div>', unsafe_allow_html=True)
+        st.button("Upload CSV", use_container_width=True, disabled=True)
 
-if should_run_upload_analysis:
+    return source_mode, st.session_state["event_mode"], st.session_state["view_mode"], uploaded_file, bool(st.session_state.get("analysis_requested"))
+
+
+def perform_analysis(source_mode: str, uploaded_file, event_mode: bool) -> None:
+    st.session_state["analysis_error"] = None
     try:
-        target_df, target_summary = load_target_dataframe(st.session_state.get("telemetry_file_bytes"))
-    except Exception as e:
-        st.error(f"We couldn't prepare the uploaded telemetry: {e}")
+        training_df, training_summary = load_training_dataframe(event_mode)
+        target_df, target_summary = load_target_dataframe(source_mode, uploaded_file, event_mode)
+        _, model_reused = ensure_diagnostic_model(training_df, MODEL_PATH)
+        result = evaluate_telemetry(target_df, MODEL_PATH, event_mode=event_mode)
+        analysis_id = build_analysis_id(target_df)
+        result["analysis_id"] = analysis_id
+        result["model_reused"] = model_reused
+        result["source_mode"] = source_mode
+        result["event_mode"] = event_mode
+        result["training_summary"] = training_summary
+        result["target_summary"] = target_summary
+        st.session_state["analysis_result"] = result
+        st.session_state["analysis_id"] = analysis_id
+        log_analysis_result(analysis_id, result, training_summary, target_summary)
+    except Exception as exc:
+        st.session_state["analysis_error"] = str(exc)
 
-elif mode == "Run a live demo (simulated)":
-    if "demo_rows" not in st.session_state:
-        st.session_state.demo_rows = [generate_demo_row(h, 15.0, inject_leak=False) for h in range(12)]
-    if "demo_running" not in st.session_state:
-        st.session_state.demo_running = False
-    if stream_trigger:
-        st.session_state.demo_running = True
 
-    if st.session_state.demo_running:
-        placeholder = st.empty()
-        for hour in range(12, 24):
-            new_row = generate_demo_row(hour, 15.0, inject_leak=True)
-            st.session_state.demo_rows.append(new_row)
-            try:
-                target_df, target_summary = validate_and_clean_data(pd.DataFrame(st.session_state.demo_rows), "live demo data")
-            except Exception as e:
-                st.error(f"Live demo data became invalid: {e}")
-                target_df = None
-                target_summary = None
-                break
-            with placeholder.container():
-                st.info(f"📡 Receiving reading for {new_row['Timestamp']} ...")
-            time.sleep(0.15)
-        st.session_state.demo_running = False
+def render_header(event_mode: bool) -> None:
+    col1, col2, col3, col4 = st.columns([1.2, 1.2, 1.0, 0.8])
+    with col1:
+        st.markdown('<div class="hero-title">HydroSentinel AI</div>', unsafe_allow_html=True)
+        st.markdown('<div class="hero-subtitle">School water monitoring that flags suspicious usage, explains why it happened, and helps teams respond with confidence.</div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown('<div class="sidebar-section-title" style="margin-top:0; margin-bottom:0.4rem;">Dashboard View</div>', unsafe_allow_html=True)
+        st.radio(
+            "Dashboard View",
+            ["Operational", "Executive"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="view_mode_radio",
+        )
+        st.session_state["view_mode"] = st.session_state["view_mode_radio"]
+    with col3:
+        badge = "chip-success" if event_mode else "chip-muted"
+        text = "Event-Aware Analysis Active" if event_mode else "Standard Analysis"
+        st.markdown(f'<div style="padding-top:1.15rem;"><span class="sidebar-chip {badge}">{text}</span></div>', unsafe_allow_html=True)
+    with col4:
+        st.markdown('<div style="padding-top:1.15rem; text-align:right;"><span class="sidebar-chip chip-primary">Facilities Hub</span></div>', unsafe_allow_html=True)
+
+
+def render_loading_hint() -> None:
+    st.markdown(
+        """
+        <div style="background:rgba(255,255,255,0.72); border:1px solid rgba(193,199,210,0.55); border-radius:18px; padding:1rem 1.1rem; margin-bottom:1rem;">
+            <div style="color:#4b5563; line-height:1.6;">
+                HydroSentinel learns normal flow, pressure, and occupancy patterns from labeled telemetry. Use <b>Event Mode</b> when the school has planned activities so the model respects legitimate usage spikes.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_operational(result: dict) -> None:
+    has_leak = bool(result["has_leak"])
+    target_df = result["df"]
+    event_mode = bool(result.get("event_mode", False))
+    event_rows = int(result.get("event_rows", 0))
+
+    if has_leak:
+        sev_label, _ = severity_level(float(result["leak_lpm"]))
+        st.markdown(
+            f"""
+            <div class="banner-critical">
+                <div>
+                    <p class="banner-title">Critical Leak Detected</p>
+                    <p class="banner-copy">{str(result.get('leak_type', 'Unknown')).replace('_', ' ').title()} pattern found with {result.get('confidence', 0.0):.1f}% confidence. Review the telemetry and respond before waste escalates.</p>
+                </div>
+                <div class="banner-action">{sev_label} severity</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     else:
-        try:
-            target_df, target_summary = validate_and_clean_data(pd.DataFrame(st.session_state.demo_rows), "live demo data")
-        except Exception as e:
-            st.error(f"Live demo data is invalid: {e}")
-            target_df = None
-            target_summary = None
+        st.markdown(
+            """
+            <div class="banner-safe">
+                <div>
+                    <p class="banner-title">No Leak Detected</p>
+                    <p class="banner-copy">The analysis stayed close to normal usage patterns. Keep monitoring, and re-run with Event Mode when planned activities change occupancy.</p>
+                </div>
+                <div class="banner-action">Stable</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-# =============================================================================
-# DASHBOARD
-# =============================================================================
-should_render_dashboard = training_df is not None and target_df is not None and (should_run_upload_analysis or mode == "Run a live demo (simulated)")
+    st.markdown(
+        """
+        <div class="stepper">
+            <div class="step active"><div class="step-badge">1</div><div><p class="meta">Step 1</p><p class="label">Sensor Readings</p></div></div>
+            <div class="step active"><div class="step-badge">2</div><div><p class="meta">Step 2</p><p class="label">Pattern Analysis</p></div></div>
+            <div class="step dimmed"><div class="step-badge">3</div><div><p class="meta">Step 3</p><p class="label">Env. Insight</p></div></div>
+            <div class="step dimmed"><div class="step-badge">4</div><div><p class="meta">Step 4</p><p class="label">Action</p></div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-if should_render_dashboard:
-    results_placeholder.empty()
-    with results_placeholder.container():
-        res = None
-        recs = []
-        analysis_id = None
-        model_reused = None
-        ml_error = None
+    status_text = "Active Leak" if has_leak else "Normal Flow"
+    leak_type = str(result.get("leak_type", "No leak")).replace("_", " ").title()
+    confidence = float(result.get("confidence", 0.0)) if has_leak else 0.0
+    cost_per_day = float(result.get("leak_lpm", 0.0)) * WATER_COST_PER_LITER * 60 * 24 if has_leak else 0.0
+    total_liters = float(result.get("total_liters", 0.0))
+    impact = significance_level(total_liters)
 
-        with st.spinner("Analyzing telemetry with HydroSentinel AI..."):
-            try:
-                _, model_reused = ensure_diagnostic_model(training_df, MODEL_PATH)
-            except Exception as e:
-                ml_error = f"We couldn't prepare the leak model: {e}"
+    kpi_cols = st.columns(5)
+    cards = [
+        ("Status", status_text, f"{confidence:.1f}% detection confidence" if has_leak else "Stable baseline", "accent-critical" if has_leak else "accent-ok"),
+        ("Type", leak_type, f"{float(result.get('leak_type_confidence', 0.0)):.1f}% classifier confidence" if has_leak else "No leak pattern", "accent-info"),
+        ("Water Loss", f"{float(result.get('leak_lpm', 0.0)):.1f} L/m", f"{total_liters:.1f} L total anomalous water" if has_leak else "No abnormal loss", "accent-warning"),
+        ("Cost Impact", f"${cost_per_day:,.0f}/hr", "Projected operating cost" if has_leak else "No added cost", "accent-warning"),
+        ("Env Impact", impact, f"{int(total_liters / DAILY_DRINKING_LITERS_PER_STUDENT)} students' drinking water" if has_leak else "No environmental impact", "accent-ok"),
+    ]
+    for col, (title, value, foot, accent) in zip(kpi_cols, cards):
+        with col:
+            st.markdown(
+                f"""
+                <div class="kpi-card {accent}">
+                    <div>
+                        <div class="title">{title}</div>
+                        <div class="value {'small' if len(value) > 12 else ''}">{value}</div>
+                    </div>
+                    <div class="foot">{foot}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-            if ml_error is None:
-                try:
-                    res = evaluate_telemetry(target_df, MODEL_PATH, event_mode=event_mode)
-                except Exception as e:
-                    ml_error = f"We couldn't analyze the telemetry: {e}"
+    main_cols = st.columns([2.15, 1])
+    with main_cols[0]:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown('<h3>Flow Over Time</h3>', unsafe_allow_html=True)
+        st.markdown('<p class="sub">Real-time telemetry versus anomaly markers</p>', unsafe_allow_html=True)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=target_df["Timestamp"], y=target_df["Flow_Rate_LPM"], mode="lines", name="Flow", line=dict(color="#004275", width=3), fill="tozeroy", fillcolor="rgba(0, 66, 117, 0.06)"))
+        if has_leak and len(result["anomalies"]) > 0:
+            fig.add_trace(go.Scatter(x=result["anomalies"]["Timestamp"], y=result["anomalies"]["Flow_Rate_LPM"], mode="markers", name="Anomaly", marker=dict(color="#dc2626", size=10, symbol="circle")))
+        fig.update_layout(template="plotly_white", margin=dict(l=10, r=10, t=10, b=10), height=420, showlegend=False, paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", xaxis=dict(title="Time", gridcolor="#edf2f7"), yaxis=dict(title="Flow (L/min)", gridcolor="#edf2f7"))
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-            if ml_error is None:
-                analysis_id = build_analysis_id(target_df)
-                try:
-                    log_analysis_result(analysis_id, res, training_summary or {}, target_summary or {})
-                except Exception as e:
-                    st.warning(f"Analysis completed, but we couldn't write logs.csv: {e}")
+    with main_cols[1]:
+        st.markdown(
+            f"""
+            <div class="why-box">
+                <div class="title">Why this alert?</div>
+                <div class="headline">{('High confidence leak signature' if has_leak else 'Usage stayed within normal bounds')}</div>
+                <p class="body">{('The model compared current flow and pressure against the learned baseline. Rising flow paired with falling pressure matched a leak pattern.' if has_leak else 'The current readings stayed close to the learned school-day profile, so the system did not flag a leak.')}</p>
+                <div class="divider"></div>
+                <p class="body" style="margin-bottom:0.35rem;"><b>Event mode:</b> {'Event-aware analysis is active.' if event_mode else 'Off. Turn it on when school events are expected.'}</p>
+                <p class="body" style="margin-bottom:0.35rem;"><b>Event rows:</b> {event_rows}</p>
+                <p class="body"><b>Data validity:</b> {result.get('validation_summary', {}).get('valid_rows', len(target_df))} valid rows used.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"""
+            <div class="note-box" style="margin-top:1rem;">
+                <div class="title">Contextual Event Note</div>
+                <p class="body">{('Event-aware context is protecting the analysis from planned-activity false positives.' if event_mode else 'If a school event is underway, turn Event Mode on for a more realistic baseline.')}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        if ml_error is not None:
-            st.error(ml_error)
-        elif res is not None:
-            recs = build_recommendations(res) if res["has_leak"] else []
-
-            if training_summary and training_summary["invalid_rows"] > 0:
-                st.warning(
-                    f"Training validation removed {training_summary['invalid_rows']} invalid row(s) and kept {training_summary['valid_rows']} row(s)."
-                )
-            if target_summary and target_summary["invalid_rows"] > 0:
-                st.warning(
-                    f"Input validation removed {target_summary['invalid_rows']} invalid row(s) and kept {target_summary['valid_rows']} row(s)."
-                )
-
-            if model_reused is True:
-                st.caption("Model cache: reused the persisted diagnostic model because the training labels did not change.")
-            elif model_reused is False:
-                st.caption("Model cache: training labels changed, so HydroSentinel retrained and updated the persisted diagnostic model.")
-
-            if res.get("event_rows", 0) > 0 and not res.get("event_mode", False):
-                st.caption("Event readings detected while Event Mode is OFF. Turn Event Mode ON for more event-aware scoring.")
-
-            if not res["time_parsed"]:
-                st.caption("Note: we couldn't read dates/times from the Timestamp column, so time-of-day context wasn't used in this analysis.")
-
-            if view_mode == "Executive summary":
-                total_liters = float(res.get("total_liters", 0.0))
-                peak_probability = float(res.get("max_leak_probability", 0.0))
-                confidence = float(res.get("confidence", 0.0))
-                cost_per_day = round(float(res.get("leak_lpm", 0.0)) * WATER_COST_PER_LITER * 60 * 24, 2) if res["has_leak"] else 0.0
-                hourly_loss = round(float(res.get("leak_lpm", 0.0)) * WATER_COST_PER_LITER * 60, 2) if res["has_leak"] else 0.0
-                event_rows = int(res.get("event_rows", 0))
-                executive_score = "A+" if not res["has_leak"] else ("B" if confidence < 80 else "C")
-                risk_label = significance_level(total_liters)
-
+    st.markdown('<div style="height:0.75rem;"></div>', unsafe_allow_html=True)
+    st.markdown('<h3 style="font-size:1.2rem; font-weight:800; margin:0 0 0.75rem; color:#121c28;">Recommended Next Steps</h3>', unsafe_allow_html=True)
+    if has_leak:
+        recs = build_recommendations(result)
+        rec_cols = st.columns(3)
+        for col, rec in zip(rec_cols, recs):
+            with col:
+                badge_class = "chip-danger" if rec["tag_class"] == "high" else "chip-warning" if rec["tag_class"] == "medium" else "chip-success"
                 st.markdown(
                     f"""
-                    <div class="exec-shell">
-                        <div class="exec-grid">
-                            <div style="grid-column: span 12;">
-                                <div class="exec-label">Institutional Safety Overview</div>
-                                <div class="app-subtitle" style="margin-bottom:0;">High-level impact snapshot built from the current telemetry analysis. This view is better for leadership briefings and operational reviews.</div>
-                            </div>
-                        </div>
+                    <div class="recommend-card {rec['tag_class']}">
+                        <span class="badge {badge_class}">{rec['tag']}</span>
+                        <h4>{rec['title']}</h4>
+                        <p class="row"><b>Reason:</b> {rec['reason']}</p>
+                        <p class="row"><b>Likely location:</b> {rec['location']}</p>
+                        <p class="row"><b>How to fix:</b> {rec['fix']}</p>
+                        <p class="row"><b>Why this priority:</b> {rec['why']}</p>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
+    else:
+        st.markdown(
+            """
+            <div class="recommend-card low">
+                <span class="badge chip-success">No Action Required</span>
+                <h4>Keep Monitoring</h4>
+                <p class="row">The current telemetry stayed within the learned normal profile. Continue routine observation and re-run with Event Mode if occupancy changes.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-                summary_cols = st.columns(4)
-                with summary_cols[0]:
-                    st.markdown(
-                        f"""
-                        <div class="answer-card accent-info">
-                            <div class="label">Water at risk</div>
-                            <div class="value">{total_liters:,.1f} L</div>
-                            <div class="footnote">Estimated anomalous water in this run</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                with summary_cols[1]:
-                    st.markdown(
-                        f"""
-                        <div class="answer-card accent-warning">
-                            <div class="label">Peak leak probability</div>
-                            <div class="value">{peak_probability:.1f}%</div>
-                            <div class="footnote">Highest event-level leak likelihood</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                with summary_cols[2]:
-                    st.markdown(
-                        f"""
-                        <div class="answer-card accent-ok">
-                            <div class="label">Event mode</div>
-                            <div class="value">{'ON' if res.get('event_mode', False) else 'OFF'}</div>
-                            <div class="footnote">Event rows observed: {event_rows}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                with summary_cols[3]:
-                    st.markdown(
-                        f"""
-                        <div class="answer-card accent-critical">
-                            <div class="label">Executive status</div>
-                            <div class="value">{executive_score}</div>
-                            <div class="footnote">Leadership-ready health indicator</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+    st.markdown(
+        """
+        <div class="ai-notice">
+            <h3>Responsible AI Notice</h3>
+            <p><b>Human-in-the-loop required.</b> HydroSentinel supports maintenance decisions; it does not perform automatic shutoff or autonomous control.</p>
+            <p><b>Event Mode matters.</b> It helps the model interpret planned school activity so legitimate usage is not mistaken for a leak.</p>
+            <p><b>Known limitation.</b> Unusual but legitimate patterns can still look suspicious if the model has not seen similar examples before.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-                left_col, right_col = st.columns([2, 1])
-                with left_col:
-                    st.markdown(
-                        """
-                        <div class="exec-card">
-                            <div class="exec-label">Monthly leak trends</div>
-                            <div class="exec-note" style="margin-top:0;">Detection efficiency vs event frequency, shown as the live flow trace from the current analysis.</div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    executive_fig = go.Figure()
-                    executive_fig.add_trace(go.Scatter(
-                        x=target_df["Timestamp"],
-                        y=target_df["Flow_Rate_LPM"],
-                        mode="lines",
-                        name="Flow",
-                        line=dict(color="#004275", width=3),
-                        fill="tozeroy",
-                        fillcolor="rgba(0, 66, 117, 0.10)",
-                    ))
-                    if res["has_leak"]:
-                        executive_fig.add_trace(go.Scatter(
-                            x=res["anomalies"]["Timestamp"],
-                            y=res["anomalies"]["Flow_Rate_LPM"],
-                            mode="markers",
-                            name="Flagged",
-                            marker=dict(color="#ba1a1a", size=10, symbol="circle"),
-                        ))
-                    executive_fig.update_layout(
-                        template="plotly_white",
-                        paper_bgcolor="#ffffff",
-                        plot_bgcolor="#ffffff",
-                        margin=dict(l=28, r=20, t=10, b=30),
-                        height=340,
-                        showlegend=False,
-                        xaxis=dict(title="Time", gridcolor="#eef2f1"),
-                        yaxis=dict(title="Flow (L/min)", gridcolor="#eef2f1"),
-                    )
-                    st.plotly_chart(executive_fig, use_container_width=True)
-                    st.markdown(
-                        f"""
-                        <div style="display:flex;justify-content:space-between;gap:16px;margin-top:10px;">
-                            <div><div class="exec-label">Cost exposure</div><div class="exec-value" style="font-size:1.45rem;">${cost_per_day:,.2f}/day</div></div>
-                            <div style="text-align:right;"><div class="exec-label">Training coverage</div><div class="exec-value" style="font-size:1.45rem;">{training_summary.get('valid_rows', 0):,}</div><div class="exec-note">valid rows used for model context</div></div>
-                        </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
 
-                with right_col:
-                    sustainability_desc = "Healthy operating profile with no active leak pattern." if not res["has_leak"] else "Leak pressure is present; fixing it improves sustainability immediately."
-                    budget_loss = hourly_loss if res["has_leak"] else 0.0
-                    st.markdown(
-                        f"""
-                        <div class="exec-card" style="margin-bottom:24px;">
-                            <div class="exec-label">Sustainability score</div>
-                            <div class="exec-value">{executive_score}</div>
-                            <div class="exec-note">{sustainability_desc}</div>
-                        </div>
-                        <div class="exec-card" style="margin-bottom:24px;">
-                            <div class="exec-label">Budget allocation</div>
-                            <div class="exec-note" style="margin-top:0;">Comparison of automated sentinel monitoring vs manual checks.</div>
-                            <div style="display:flex; justify-content:space-between; margin-top:16px; gap:12px;">
-                                <div><div class="exec-label">Hourly loss</div><div class="exec-value" style="font-size:1.4rem;">${budget_loss:,.2f}</div></div>
-                                <div style="text-align:right;"><div class="exec-label">Risk tier</div><div class="exec-value" style="font-size:1.4rem;">{risk_label}</div></div>
-                            </div>
-                        </div>
-                        <div class="exec-card">
-                            <div class="exec-label">Model performance logic</div>
-                            <div class="exec-note" style="margin-top:0;">HydroSentinel uses labeled flow, pressure, occupancy, hour, and weekend context. Event Mode includes school event patterns so legitimate gatherings are less likely to trigger a false alarm.</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+def render_executive(result: dict) -> None:
+    has_leak = bool(result["has_leak"])
+    event_mode = bool(result.get("event_mode", False))
+    event_rows = int(result.get("event_rows", 0))
+    total_liters = float(result.get("total_liters", 0.0))
+    peak_probability = float(result.get("max_leak_probability", 0.0))
+    confidence = float(result.get("confidence", 0.0)) if has_leak else 0.0
+    cost_per_day = float(result.get("leak_lpm", 0.0)) * WATER_COST_PER_LITER * 60 * 24 if has_leak else 0.0
+    risk_label = significance_level(total_liters)
+    status_text = "Critical" if has_leak else "Stable"
 
-                st.markdown(
-                    """
-                    <div class="rai-card">
-                        <h4>Responsible AI notice</h4>
-                        <div class="rai-item"><b>Human review remains mandatory.</b> HydroSentinel supports maintenance decisions; it does not take control actions automatically.</div>
-                        <div class="rai-item"><b>Event Mode improves context.</b> It helps distinguish school events from abnormal leaks when the occupancy pattern is expected to change.</div>
-                        <div class="rai-item"><b>Validation matters.</b> The model reuses a persisted diagnostic bundle only when the labeled training fingerprint still matches the current data context.</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                st.stop()
-
-            probability_value = float(res.get("confidence", 0.0)) if res["has_leak"] else 0.0
-            status_label, status_color = probability_status(probability_value)
-            metric_col, status_col = st.columns([1, 2])
-            with metric_col:
-                st.metric("Leak Probability", f"{probability_value:.1f}%")
-            with status_col:
-                st.markdown(
-                    f"<div style='padding-top:1.7rem; font-weight:700; color:{status_color};'>System status: {status_label}</div>",
-                    unsafe_allow_html=True,
-                )
-
-            if res["has_leak"]:
-                sev_label, _ = severity_level(res["leak_lpm"])
-                st.markdown(f"""
-                <div class="status-banner critical">
-                    <div class="status-headline">🚨 Leak Detected — {sev_label} severity</div>
-                    <div class="status-sub">A water-use pattern diverged from the learned diagnostic profile. Review the predicted leak type, confidence, and loss estimate before taking action.</div>
+    st.markdown(
+        """
+        <div class="exec-hero">
+            <div style="display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; flex-wrap:wrap; position:relative; z-index:1;">
+                <div>
+                    <h2>Institutional Safety Overview</h2>
+                    <p>A high-level synthesis of water risk, response readiness, and operational impact across the current analysis run.</p>
                 </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown("""
-                <div class="status-banner ok">
-                    <div class="status-headline">✅ No Leak Detected</div>
-                    <div class="status-sub">Water use across the readings we checked stayed close to the learned normal consumption pattern.</div>
+                <div class="action">Download Executive Summary</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    exec_cards = st.columns(4)
+    payload = [
+        ("Total Water at Risk", f"{total_liters:,.1f} L", "Estimated anomalous water in this run" if has_leak else "No abnormal water loss detected", "accent-info"),
+        ("Peak Leak Probability", f"{peak_probability:.1f}%", "Highest anomaly likelihood in the current analysis", "accent-warning"),
+        ("Event Context", "ON" if event_mode else "OFF", f"Event rows observed: {event_rows}", "accent-ok" if event_mode else "accent-info"),
+        ("Executive Status", status_text, f"Confidence: {confidence:.1f}%" if has_leak else "Normal operating state", "accent-critical" if has_leak else "accent-ok"),
+    ]
+    for col, (label, value, foot, accent) in zip(exec_cards, payload):
+        with col:
+            st.markdown(
+                f"""
+                <div class="exec-card {accent}">
+                    <div class="label">{label}</div>
+                    <div class="value {'small' if len(value) > 12 else ''}">{value}</div>
+                    <div class="desc">{foot}</div>
                 </div>
-                """, unsafe_allow_html=True)
-
-            if res["has_leak"]:
-                sev_label, sev_class = severity_level(res["leak_lpm"])
-                sig_label = significance_level(res["total_liters"])
-                c1, c2, c3, c4, c5 = st.columns(5)
-                with c1:
-                    st.markdown(f"""<div class="answer-card accent-critical">
-                        <div class="label">Leak status</div><div class="value">Detected</div>
-                        <div class="footnote">{res['confidence']:.0f}% detection confidence</div></div>""", unsafe_allow_html=True)
-                with c2:
-                    st.markdown(f"""<div class="answer-card accent-{sev_class}">
-                    <div class="label">Predicted leak type</div><div class="value">{str(res.get('leak_type', 'Unknown')).replace('_', ' ').title()}</div>
-                    <div class="footnote">{res.get('leak_type_confidence', 0.0):.0f}% classifier confidence</div></div>""", unsafe_allow_html=True)
-                with c3:
-                    st.markdown(f"""<div class="answer-card accent-warning">
-                    <div class="label">Water being lost</div><div class="value">{res['leak_lpm']} L/min</div>
-                    <div class="footnote">${res['cost_min']}/min in cost</div></div>""", unsafe_allow_html=True)
-                with c4:
-                    st.markdown(f"""<div class="answer-card accent-info">
-                    <div class="label">Environmental impact</div><div class="value">{sig_label}</div>
-                    <div class="footnote">Drinking water for {res['students_count']} students lost</div></div>""", unsafe_allow_html=True)
-                with c5:
-                    quick_action = recs[0]["title"] if recs else "No action needed"
-                    st.markdown(f"""<div class="answer-card accent-ok">
-                    <div class="label">Priority 1 action</div><div class="value" style="font-size:1.05rem;">{quick_action}</div>
-                    <div class="footnote">See all 3 recommended actions below</div></div>""", unsafe_allow_html=True)
-            else:
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.markdown(f"""<div class="answer-card accent-ok"><div class="label">Leak status</div>
-                    <div class="value">None</div><div class="footnote">All clear</div></div>""", unsafe_allow_html=True)
-                with c2:
-                    st.markdown(f"""<div class="answer-card accent-info"><div class="label">Typical flow</div>
-                    <div class="value">{round(target_df['Flow_Rate_LPM'].median(), 1)} L/min</div>
-                    <div class="footnote">Stable baseline</div></div>""", unsafe_allow_html=True)
-                with c3:
-                    st.markdown(f"""<div class="answer-card accent-info"><div class="label">Typical pressure</div>
-                    <div class="value">{round(target_df['Avg_Pressure_PSI'].mean(), 1)} PSI</div>
-                    <div class="footnote">Within safe range</div></div>""", unsafe_allow_html=True)
-
-            tab1, tab2 = st.tabs(["📈 Trend Chart", "🛠️ Recommended Actions"])
-
-        with tab1:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=target_df["Timestamp"], y=target_df["Flow_Rate_LPM"],
-                mode="lines", name="Water flow",
-                line=dict(color="#146C5F", width=3),
-            ))
-            if res["has_leak"]:
-                fig.add_trace(go.Scatter(
-                    x=res["anomalies"]["Timestamp"], y=res["anomalies"]["Flow_Rate_LPM"],
-                    mode="markers", name="Flagged as unusual",
-                    marker=dict(color="#B03A2E", size=10, symbol="circle", line=dict(color="#FFFFFF", width=1)),
-                ))
-                fig.add_annotation(
-                    x=res["anomalies"]["Timestamp"].iloc[0], y=res["anomalies"]["Flow_Rate_LPM"].iloc[0],
-                    text="Unusual reading", showarrow=True, arrowhead=2,
-                    arrowcolor="#B03A2E", bgcolor="#FBEAE7", bordercolor="#B03A2E", font=dict(color="#B03A2E"),
-                )
-            fig.update_layout(
-                template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
-                margin=dict(l=40, r=40, t=20, b=40), height=400,
-                font=dict(family="Inter, sans-serif", color="#4B5D59"),
-                xaxis=dict(gridcolor="#EEF2F1", title="Time"),
-                yaxis=dict(gridcolor="#EEF2F1", title="Flow (L/min)"),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                """,
+                unsafe_allow_html=True,
             )
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption("Each dot marks a reading that the diagnostic model bundle scored as unusual relative to the learned labeled telemetry pattern.")
 
-        with tab2:
-            if res["has_leak"]:
-                top_row = res["top_row"]
-                st.markdown(f"""
-                <div class="why-card">
-                    <span class="confidence-tag">{res['confidence']:.0f}% detection confidence</span>
-                    <div class="why-title">Why the system flagged this</div>
-                    <div class="why-compare">
-                        <div class="pair">Baseline flow: <b>{res['base_flow']} L/min</b> → Current flow: <b>{top_row['Flow_Rate_LPM']} L/min</b> ({res['deviation_pct']:.0f}% above baseline)</div>
-                        <div class="pair">Baseline pressure: <b>{res['base_pressure']} PSI</b> → Current pressure: <b>{top_row['Avg_Pressure_PSI']} PSI</b> ({res['pressure_drop_pct']:.0f}% drop)</div>
+    st.markdown('<div style="height:1rem;"></div>', unsafe_allow_html=True)
+    grid = st.columns([1.2, 1])
+    with grid[0]:
+        st.markdown('<div class="exec-card">', unsafe_allow_html=True)
+        st.markdown('<div class="label">Water Usage Efficiency</div>', unsafe_allow_html=True)
+        st.markdown('<div class="desc" style="margin-top:0;">Operational usage versus projected baseline for this analysis run.</div>', unsafe_allow_html=True)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=result["df"]["Timestamp"], y=result["df"]["Flow_Rate_LPM"], mode="lines", name="Usage", line=dict(color="#004275", width=3), fill="tozeroy", fillcolor="rgba(0,66,117,0.06)"))
+        if has_leak:
+            fig.add_trace(go.Scatter(x=result["anomalies"]["Timestamp"], y=result["anomalies"]["Flow_Rate_LPM"], mode="markers", marker=dict(color="#dc2626", size=10), name="Anomaly"))
+        fig.update_layout(template="plotly_white", height=360, margin=dict(l=10, r=10, t=10, b=10), showlegend=False, paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", xaxis=dict(title="Time", gridcolor="#edf2f7"), yaxis=dict(title="Flow (L/min)", gridcolor="#edf2f7"))
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown(
+            f"""
+            <div class="exec-card" style="margin-top:1rem;">
+                <div class="label">Budget Allocation</div>
+                <div style="display:grid; gap:0.8rem; margin-top:0.55rem;">
+                    <div>
+                        <div class="desc" style="display:flex; justify-content:space-between; margin-top:0; font-size:0.9rem;"><span>Manual inspection exposure</span><span style="font-family:JetBrains Mono, monospace; font-weight:700;">${cost_per_day:,.0f}/day</span></div>
+                        <div style="height:10px; background:#eef4ff; border-radius:999px; overflow:hidden;"><div style="width:{min(100, max(8, total_liters / 60))}%; height:100%; background:#004275;"></div></div>
                     </div>
-                    <div class="why-reason">This reading received one of the strongest diagnostic signals after the classifier learned the relationships between flow, pressure, occupancy status, hour, and weekend context. Rising flow paired with falling pressure still matches the physical signature of water escaping through an unintended opening: when a fixture is used normally, flow and pressure tend to move together, but a leak pulls flow up while pressure drops.</div>
-                    <span class="why-evidence">To put it in perspective: this is roughly the same rate as {res['metaphor']}.</span>
-                </div>
-                """, unsafe_allow_html=True)
-
-                st.markdown("##### What to do next")
-                for rec in recs:
-                    st.markdown(f"""
-                    <div class="action-card priority-{rec['tag_class']}">
-                        <span class="action-tag {rec['tag_class']}">{rec['tag']}</span>
-                        <div class="action-title">{rec['title']}</div>
-                        <div class="action-row"><b>Reason:</b> {rec['reason']}</div>
-                        <div class="action-row"><b>Likely location:</b> {rec['location']}</div>
-                        <div class="action-row"><b>How to fix:</b> {rec['fix']}</div>
-                        <div class="action-row"><b>Why this priority:</b> {rec['why_priority']}</div>
+                    <div>
+                        <div class="desc" style="display:flex; justify-content:space-between; margin-top:0; font-size:0.9rem;"><span>Event-aware confidence</span><span style="font-family:JetBrains Mono, monospace; font-weight:700;">{event_mode and 'ON' or 'OFF'}</span></div>
+                        <div style="height:10px; background:#eef4ff; border-radius:999px; overflow:hidden;"><div style="width:{peak_probability if peak_probability > 1 else 1}%; height:100%; background:#006a61;"></div></div>
                     </div>
-                    """, unsafe_allow_html=True)
-
-                st.markdown("##### Alert review")
-                review_col1, review_col2 = st.columns(2)
-                if review_col1.button("Mark alert as correct", key=f"feedback_true_{analysis_id}"):
-                    try:
-                        save_feedback(analysis_id, "correct_alert", res)
-                        st.success("Feedback saved to feedback.csv")
-                    except Exception as e:
-                        st.error(f"We couldn't save positive feedback: {e}")
-                if review_col2.button("Mark alert as false alarm", key=f"feedback_false_{analysis_id}"):
-                    try:
-                        save_feedback(analysis_id, "false_alarm", res)
-                        st.success("Feedback saved to feedback.csv")
-                    except Exception as e:
-                        st.error(f"We couldn't save false-alarm feedback: {e}")
-
-                liters_per_hour = round(res["leak_lpm"] * 60)
-                liters_per_day = round(res["leak_lpm"] * 60 * 24)
-                liters_per_month = round(res["leak_lpm"] * 60 * 24 * 30)
-                liters_per_year = round(res["leak_lpm"] * 60 * 24 * 365)
-                cost_per_day = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24, 2)
-                cost_per_month = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24 * 30)
-                cost_per_year = round(res["leak_lpm"] * WATER_COST_PER_LITER * 60 * 24 * 365)
-                sig_label = significance_level(res["total_liters"])
-                st.markdown(f"""
-                <div class="env-card">
-                    <h4>🌍 Environmental & financial impact</h4>
-                    <div class="env-stat"><div class="num">{res['students_count']}</div><div class="lbl">students' daily drinking water lost so far</div></div>
-                    <div class="env-stat"><div class="num">{liters_per_hour:,} L</div><div class="lbl">lost per hour if left unfixed</div></div>
-                    <div class="env-stat"><div class="num">{liters_per_day:,} L</div><div class="lbl">lost per day if left unfixed</div></div>
-                    <div class="env-stat"><div class="num">{liters_per_month:,} L</div><div class="lbl">lost per month if left unfixed</div></div>
-                    <div class="env-stat"><div class="num">{liters_per_year:,} L</div><div class="lbl">lost per year if left unfixed</div></div>
-                    <div class="env-stat"><div class="num">${cost_per_day:,}</div><div class="lbl">cost per day if ignored</div></div>
-                    <div class="env-stat"><div class="num">${cost_per_month:,}</div><div class="lbl">cost per month if ignored</div></div>
-                    <div class="env-stat"><div class="num">${cost_per_year:,}</div><div class="lbl">cost per year if ignored</div></div>
-                    <div class="env-stat"><div class="num">{sig_label}</div><div class="lbl">environmental significance level</div></div>
                 </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown("""
-                <div class="action-card" style="border-left:4px solid #3F8F5F;">
-                    <div class="action-title">No action needed right now</div>
-                    <div class="action-row">Water use stayed close to the learned normal profile. We'll keep watching and let you know if anything changes.</div>
-                </div>
-                """, unsafe_allow_html=True)
+                <div class="divider"></div>
+                <p class="desc" style="font-style:italic; margin-bottom:0;">"HydroSentinel helps leadership prioritize response by showing the current risk in plain language, without hiding the operational evidence."</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-# =============================================================================
-# RESPONSIBLE AI NOTICE
-# =============================================================================
-st.markdown("""
-    <div class="rai-card">
-        <h4>⚖️ What this decision-support system can and can't do</h4>
-        <div class="rai-item"><b>A model-based score, not a guess.</b> The confidence percentage is derived from the classifier probability and the regression loss estimate after the diagnostic model learns labeled telemetry patterns across flow, pressure, occupancy, hour, and weekend context.</div>
-        <div class="rai-item"><b>A person always decides.</b> This system never shuts off water or contacts anyone automatically. Every alert needs a maintenance team member to review it and choose what to do — shutting off water during school hours can create its own safety and sanitation risks.</div>
-        <div class="rai-item"><b>Known limitation.</b> Unusual but legitimate events can still look abnormal if the training data did not include similar no-leak examples. The model becomes more reliable as you retrain it on clean normal and event-day data.</div>
-        <div class="rai-item"><b>How this prototype was validated.</b> This version trains on the bundled labeled telemetry or a synthesized labels file when needed. Every run is also written to logs.csv, and user reviews of alerts are written to feedback.csv to support future tuning.</div>
-    </div>
-    """, unsafe_allow_html=True)
+    with grid[1]:
+        st.markdown(
+            f"""
+            <div class="exec-card" style="margin-bottom:1rem;">
+                <div class="label">Sustainability Score</div>
+                <div class="value">{'A+' if not has_leak else 'B'}</div>
+                <div class="desc">{('Healthy operating profile' if not has_leak else 'Leak impact should be resolved to preserve resources')}</div>
+            </div>
+            <div class="exec-card" style="margin-bottom:1rem;">
+                <div class="label">Risk Tier</div>
+                <div class="value small">{risk_label}</div>
+                <div class="desc">Leadership-friendly severity summary based on the current telemetry run.</div>
+            </div>
+            <div class="exec-card gov-box">
+                <div class="title">AI Governance & Logic</div>
+                <div class="body">HydroSentinel compares live telemetry with its learned baseline and uses Event Mode when school activity is expected. Human review remains required before any action.</div>
+                <div class="divider"></div>
+                <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                    <span class="sidebar-chip chip-primary">Human-in-the-loop</span>
+                    <span class="sidebar-chip chip-muted">Event-aware</span>
+                    <span class="sidebar-chip chip-muted">Decision Support</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        """
+        <div class="ai-notice">
+            <h3>Responsible AI Notice</h3>
+            <p>HydroSentinel provides advisory scoring only. It does not shut off water, trigger automation, or replace human judgment.</p>
+            <p>Event Mode is essential during assemblies, sports days, and other planned activities because occupancy patterns change without implying a leak.</p>
+            <p>Model confidence depends on the quality of the uploaded or simulated telemetry and the current training context.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def main() -> None:
+    init_state()
+    inject_styles()
+
+    source_mode, event_mode, view_mode, uploaded_file, analyze_requested = render_sidebar()
+    st.session_state["source_mode"] = source_mode
+    st.session_state["view_mode"] = view_mode
+
+    render_header(event_mode)
+    view_mode = st.session_state["view_mode"]
+    render_loading_hint()
+
+    if analyze_requested:
+        perform_analysis(source_mode, uploaded_file, event_mode)
+        st.session_state["analysis_requested"] = False
+
+    result = st.session_state.get("analysis_result")
+    analysis_error = st.session_state.get("analysis_error")
+
+    if analysis_error:
+        st.error(f"We couldn't run the analysis: {analysis_error}")
+
+    if result is None and not analysis_error:
+        st.info("Upload a telemetry CSV or run the live demo, then press Analyze to see the dashboard.")
+        return
+
+    if result is not None:
+        if view_mode == "Operational":
+            render_operational(result)
+        else:
+            render_executive(result)
+
+
+if __name__ == "__main__":
+    main()
