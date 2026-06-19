@@ -625,6 +625,67 @@ def render_loading_hint() -> None:
     )
 
 
+def render_data_documentation() -> None:
+    """Display information about the sample CSV files used for demonstration and training."""
+    st.markdown('<h3 style="font-size:1.2rem; font-weight:800; margin:1.5rem 0 0.75rem; color:#121c28;">📊 Simulated Data Files</h3>', unsafe_allow_html=True)
+    
+    st.markdown(
+        """
+        <div style="background:#f9fafb; border:1px solid rgba(193,199,210,0.6); border-radius:16px; padding:1.15rem; margin-bottom:1.5rem;">
+            <p style="color:#414750; line-height:1.65; margin:0;">
+                <b style="color:#004275;">⚠️ Simulation Notice:</b> The following CSV files represent simulated IoT sensor data created for demonstration and testing purposes only. 
+                These files model the behavior of flow rates and pressure readings in a school water infrastructure environment, compensating for the absence of real sensor hardware during this pilot phase.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    data_files = [
+        {
+            "name": "normal.csv",
+            "description": "Baseline normal water usage during typical school days",
+            "simulation": "Models regular flow and pressure patterns during Class Hours, After Hours, and Vacation periods",
+        },
+        {
+            "name": "example_normal_day_2026-10-05.csv",
+            "description": "Example of a single day's normal operations",
+            "simulation": "Simulates hourly telemetry for a complete school day with realistic occupancy transitions",
+        },
+        {
+            "name": "event.csv",
+            "description": "Water usage patterns during planned school events",
+            "simulation": "Simulates elevated flow and pressure readings during assemblies, sports days, and celebrations",
+        },
+        {
+            "name": "event_leak.csv",
+            "description": "Sample data with anomalies for leak detection validation",
+            "simulation": "Simulates leak scenarios combined with event activity to test model reliability",
+        },
+    ]
+
+    for i, file_info in enumerate(data_files, 1):
+        st.markdown(
+            f"""
+            <div style="background:#ffffff; border:1px solid rgba(193,199,210,0.7); border-radius:14px; padding:1rem; margin-bottom:0.85rem;">
+                <div style="display:flex; align-items:flex-start; gap:1rem;">
+                    <div style="background:#dbeafe; color:#004275; width:32px; height:32px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-weight:800; flex-shrink:0;">{i}</div>
+                    <div style="flex:1;">
+                        <div style="font-weight:800; color:#121c28; font-size:1rem; margin-bottom:0.3rem;">📄 {file_info['name']}</div>
+                        <p style="color:#414750; margin:0.4rem 0 0; line-height:1.55; font-size:0.95rem;">
+                            <b>Purpose:</b> {file_info['description']}
+                        </p>
+                        <p style="color:#5b6471; margin:0.4rem 0 0; line-height:1.55; font-size:0.92rem;">
+                            <b>Simulation:</b> {file_info['simulation']}
+                        </p>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def render_operational(result: dict) -> None:
     has_leak = bool(result["has_leak"])
     target_df = result["df"]
@@ -950,6 +1011,7 @@ def main() -> None:
     render_header(event_mode)
     view_mode = st.session_state["view_mode"]
     render_loading_hint()
+    render_data_documentation()
 
     if analyze_requested:
         perform_analysis(source_mode, uploaded_file, event_mode)
