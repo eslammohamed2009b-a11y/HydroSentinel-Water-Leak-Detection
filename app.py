@@ -29,6 +29,40 @@ st.set_page_config(
     layout="wide",
 )
 
+st.markdown(
+    """
+    <style>
+    @media (max-width: 768px) {
+        .stApp {
+            width: 100vw;
+            overflow-x: hidden;
+        }
+
+        div[data-testid="stSidebar"] {
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+        }
+
+        .block-container {
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+
+        div[data-testid="stDataFrame"],
+        .stDataFrame,
+        div[data-testid="stPlotlyChart"],
+        .stPlotlyChart {
+            width: 100% !important;
+            max-width: 100% !important;
+            overflow-x: auto;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 APP_DIR = CURRENT_DIR
 SAMPLE_FILES = {
@@ -87,6 +121,7 @@ def inject_styles() -> None:
             background: var(--bg);
             color: var(--ink);
             font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+            overflow-x: hidden;
         }
 
         [data-testid="stHeader"], #MainMenu, footer { display: none; }
@@ -285,6 +320,70 @@ def inject_styles() -> None:
         @media (max-width: 1180px) {
             .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .stepper { grid-template-columns: 1fr 1fr; }
+        }
+
+        @media (max-width: 768px) {
+            html, body, .main, .stApp, [data-testid="stAppViewContainer"] {
+                width: 100vw;
+                max-width: 100vw;
+                overflow-x: hidden;
+            }
+
+            .block-container {
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
+
+            [data-testid="stSidebar"] {
+                width: 100% !important;
+                min-width: 100% !important;
+                max-width: 100% !important;
+            }
+
+            [data-testid="stSidebar"] .stButton > button,
+            .stButton > button {
+                width: 100%;
+            }
+
+            .kpi-grid,
+            .stepper {
+                grid-template-columns: 1fr;
+            }
+
+            .banner-critical,
+            .banner-safe,
+            .sidebar-card {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .hero-title { font-size: 1.7rem; }
+            .brand h1 { font-size: 1.45rem; }
+            .exec-hero { padding: 1.15rem; }
+            .exec-hero h2 { font-size: 1.6rem; }
+
+            .exec-hero,
+            .panel,
+            .recommend-card,
+            .why-box,
+            .note-box,
+            .gov-box,
+            .ai-notice {
+                border-radius: 14px;
+            }
+
+            div[data-testid="stDataFrame"],
+            .stDataFrame,
+            div[data-testid="stPlotlyChart"],
+            .stPlotlyChart {
+                width: 100% !important;
+                max-width: 100% !important;
+                overflow-x: auto;
+            }
+
+            img, video, canvas, svg, iframe {
+                max-width: 100%;
+            }
         }
         </style>
         """,
