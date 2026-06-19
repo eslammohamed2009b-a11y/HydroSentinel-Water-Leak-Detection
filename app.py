@@ -164,7 +164,9 @@ def inject_styles() -> None:
         .step-badge {
             width: 52px; height: 52px; border-radius: 999px; display: flex; align-items: center;
             justify-content: center; font-weight: 800; font-size: 1.05rem; color: var(--primary);
-            background: #e7eff9;
+            background: #dbeafe;
+            border: 2px solid #c7d7ef;
+            box-shadow: 0 0 0 4px rgba(0,66,117,0.04);
         }
         .step.active .step-badge { background: var(--primary-2); color: #fff; }
         .step .meta {
@@ -172,7 +174,13 @@ def inject_styles() -> None:
             font-size: 0.7rem; font-weight: 800;
         }
         .step .label { margin: 0.1rem 0 0; font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em; color: var(--ink); }
-        .step.dimmed { opacity: 0.38; }
+        .step.dimmed { opacity: 0.9; }
+
+        .step.dimmed .step-badge {
+            opacity: 1;
+            background: #eef4ff;
+            color: var(--primary);
+        }
 
         .kpi-grid {
             display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1rem;
@@ -525,10 +533,10 @@ def render_header(event_mode: bool) -> None:
         st.markdown('<div class="hero-title">HydroSentinel AI</div>', unsafe_allow_html=True)
         st.markdown('<div class="hero-subtitle">School water monitoring that flags suspicious usage, explains why it happened, and helps teams respond with confidence.</div>', unsafe_allow_html=True)
     with col2:
-        st.markdown('<div class="sidebar-section-title" style="margin-top:0; margin-bottom:0.4rem;">Dashboard View</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-section-title" style="margin-top:0; margin-bottom:0.4rem;">View Mode</div>', unsafe_allow_html=True)
         st.radio(
-            "Dashboard View",
-            ["Operational", "Executive"],
+            "View Mode",
+            ["Operational clarity", "Executive summary"],
             horizontal=True,
             label_visibility="collapsed",
             key="view_mode_radio",
@@ -536,10 +544,10 @@ def render_header(event_mode: bool) -> None:
         st.session_state["view_mode"] = st.session_state["view_mode_radio"]
     with col3:
         badge = "chip-success" if event_mode else "chip-muted"
-        text = "Event-Aware Analysis Active" if event_mode else "Standard Analysis"
+        text = "Event Mode: ON" if event_mode else "Event Mode: OFF"
         st.markdown(f'<div style="padding-top:1.15rem;"><span class="sidebar-chip {badge}">{text}</span></div>', unsafe_allow_html=True)
     with col4:
-        st.markdown('<div style="padding-top:1.15rem; text-align:right;"><span class="sidebar-chip chip-primary">Facilities Hub</span></div>', unsafe_allow_html=True)
+        st.markdown('<div style="padding-top:1.15rem; text-align:right;"><span class="sidebar-chip chip-primary">Admin Access</span></div>', unsafe_allow_html=True)
 
 
 def render_loading_hint() -> None:
@@ -863,7 +871,7 @@ def main() -> None:
         return
 
     if result is not None:
-        if view_mode == "Operational":
+        if view_mode == "Operational clarity":
             render_operational(result)
         else:
             render_executive(result)
