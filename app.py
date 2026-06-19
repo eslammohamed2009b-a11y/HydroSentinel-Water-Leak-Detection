@@ -646,21 +646,25 @@ def render_data_documentation() -> None:
             "name": "normal.csv",
             "description": "Baseline normal water usage during typical school days",
             "simulation": "Models regular flow and pressure patterns during Class Hours, After Hours, and Vacation periods",
+            "path": APP_DIR / "normal.csv",
         },
         {
             "name": "example_normal_day_2026-10-05.csv",
             "description": "Example of a single day's normal operations",
             "simulation": "Simulates hourly telemetry for a complete school day with realistic occupancy transitions",
+            "path": APP_DIR / "example_normal_day_2026-10-05.csv",
         },
         {
             "name": "event.csv",
             "description": "Water usage patterns during planned school events",
             "simulation": "Simulates elevated flow and pressure readings during assemblies, sports days, and celebrations",
+            "path": APP_DIR / "event.csv",
         },
         {
             "name": "event_leak.csv",
             "description": "Sample data with anomalies for leak detection validation",
             "simulation": "Simulates leak scenarios combined with event activity to test model reliability",
+            "path": APP_DIR / "event_leak.csv",
         },
     ]
 
@@ -684,6 +688,21 @@ def render_data_documentation() -> None:
             """,
             unsafe_allow_html=True,
         )
+
+        file_path = file_info["path"]
+        if file_path.exists():
+            with file_path.open("rb") as csv_file:
+                st.download_button(
+                    label=f"Download {file_info['name']} (Simulation Data)",
+                    data=csv_file.read(),
+                    file_name=file_info["name"],
+                    mime="text/csv",
+                    key=f"download_sim_csv_{i}",
+                    use_container_width=True,
+                    help="Simulation Data: Synthetic IoT-style telemetry used for HydroSentinel demo and validation.",
+                )
+        else:
+            st.warning(f"Simulation file not found: {file_info['name']}")
 
 
 def render_operational(result: dict) -> None:
