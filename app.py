@@ -75,6 +75,12 @@ SCENARIO_FILES = {
     "Scenario C - Event Day (No Leak)": APP_DIR / "event.csv",
     "Scenario D - Event Day + Leak": APP_DIR / "event_leak.csv",
 }
+SCENARIO_OPTIONS = {
+    "normal.csv": APP_DIR / "normal.csv",
+    "normal_leak.csv": APP_DIR / "normal_leak.csv",
+    "event.csv": APP_DIR / "event.csv",
+    "event_leak.csv": APP_DIR / "event_leak.csv",
+}
 MODEL_PATH = APP_DIR / "hydrosentinel_isolation_forest.joblib"
 FEEDBACK_PATH = APP_DIR / "feedback.csv"
 LOGS_PATH = APP_DIR / "logs.csv"
@@ -84,8 +90,8 @@ def init_state() -> None:
     defaults = {
         "view_mode": "Operational",
         "event_mode": False,
-        "source_mode": "Scenario Matrix",
-        "scenario_selected": "Scenario A - Baseline Normal Day",
+        "source_mode": "Local CSV Files",
+        "scenario_selected": "normal.csv",
         "analysis_requested": False,
         "analysis_result": None,
         "analysis_error": None,
@@ -529,7 +535,7 @@ def significance_level(total_liters: float) -> str:
 
 
 def load_target_dataframe(scenario_selected: str) -> tuple[pd.DataFrame, dict]:
-    scenario_path = SCENARIO_FILES.get(scenario_selected)
+    scenario_path = SCENARIO_OPTIONS.get(scenario_selected) or SCENARIO_FILES.get(scenario_selected)
     if scenario_path is None:
         raise ValueError(f"Unknown scenario selected: {scenario_selected}")
     if not scenario_path.exists():
@@ -585,14 +591,13 @@ def render_sidebar() -> tuple[str, bool, str, bool]:
             """,
             unsafe_allow_html=True,
         )
-
-        st.markdown('<div class="sidebar-section-title">Official Data Source</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-section-title">Local CSV Selection</div>', unsafe_allow_html=True)
         scenario_selected = st.selectbox(
-            "Scenario Matrix",
-            list(SCENARIO_FILES.keys()),
-            index=list(SCENARIO_FILES.keys()).index(st.session_state.get("scenario_selected", "Scenario A - Baseline Normal Day")) if st.session_state.get("scenario_selected", "Scenario A - Baseline Normal Day") in SCENARIO_FILES else 0,
-            key="scenario_matrix_selector",
-            help="Run analysis only on official local Scenario Matrix files.",
+            "Select Scenario",
+            list(SCENARIO_OPTIONS.keys()),
+            index=list(SCENARIO_OPTIONS.keys()).index(st.session_state.get("scenario_selected", "normal.csv")) if st.session_state.get("scenario_selected", "normal.csv") in SCENARIO_OPTIONS else 0,
+            key="scenario_selector",
+            help="Choose one of the generated local CSV files for analysis.",
         )
         st.session_state["scenario_selected"] = scenario_selected
 
@@ -640,7 +645,7 @@ def perform_analysis(scenario_selected: str, event_mode: bool) -> None:
         analysis_id = build_analysis_id(target_df)
         result["analysis_id"] = analysis_id
         result["model_reused"] = model_reused
-        result["source_mode"] = "Scenario Matrix"
+        result["source_mode"] = "Local CSV Files"
         result["scenario_selected"] = scenario_selected
         result["event_mode"] = event_mode
         result["training_summary"] = training_summary
@@ -1088,7 +1093,7 @@ def main() -> None:
     inject_styles()
 
     scenario_selected, event_mode, view_mode, analyze_requested = render_sidebar()
-    st.session_state["source_mode"] = "Scenario Matrix"
+    st.session_state["source_mode"] = "Local CSV Files"
     st.session_state["view_mode"] = view_mode
 
     render_header(event_mode)
@@ -1107,7 +1112,7 @@ def main() -> None:
         st.error(f"We couldn't run the analysis: {analysis_error}")
 
     if result is None and not analysis_error:
-        st.info("Choose one of the official Scenario Matrix datasets in the sidebar, then press Analyze.")
+        st.info("Choose one of the local CSV files in the sidebar, then press Analyze.")
         return
 
     if result is not None:
