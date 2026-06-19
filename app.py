@@ -17,7 +17,7 @@ if str(CURRENT_DIR) not in sys.path:
 
 from ml_engine import (
     DAILY_DRINKING_LITERS_PER_STUDENT,
-    WATER_COST_PER_LITER,
+    calculate_financial_loss,
     ensure_diagnostic_model,
     evaluate_telemetry,
     load_training_labels_for_mode,
@@ -754,7 +754,7 @@ def render_operational(result: dict) -> None:
     status_text = "Active Leak" if has_leak else "Normal Flow"
     leak_type = str(result.get("leak_type", "No leak")).replace("_", " ").title()
     confidence = float(result.get("confidence", 0.0)) if has_leak else 0.0
-    cost_per_day = float(result.get("leak_lpm", 0.0)) * WATER_COST_PER_LITER * 60 * 24 if has_leak else 0.0
+    cost_per_hour = calculate_financial_loss(float(result.get("leak_lpm", 0.0))) if has_leak else 0.0
     total_liters = float(result.get("total_liters", 0.0))
     impact = significance_level(total_liters)
 
@@ -763,7 +763,7 @@ def render_operational(result: dict) -> None:
         ("Status", status_text, f"{confidence:.1f}% detection confidence" if has_leak else "Stable baseline", "accent-critical" if has_leak else "accent-ok"),
         ("Type", leak_type, f"{float(result.get('leak_type_confidence', 0.0)):.1f}% classifier confidence" if has_leak else "No leak pattern", "accent-info"),
         ("Water Loss", f"{float(result.get('leak_lpm', 0.0)):.1f} L/m", f"{total_liters:.1f} L total anomalous water" if has_leak else "No abnormal loss", "accent-warning"),
-        ("Cost Impact", f"${cost_per_day:,.0f}/hr", "Projected operating cost" if has_leak else "No added cost", "accent-warning"),
+        ("Cost Impact", f"${cost_per_hour:,.2f}/hr", "Projected operating cost" if has_leak else "No added cost", "accent-warning"),
         ("Env Impact", impact, f"{int(total_liters / DAILY_DRINKING_LITERS_PER_STUDENT)} students' drinking water" if has_leak else "No environmental impact", "accent-ok"),
     ]
     for col, (title, value, foot, accent) in zip(kpi_cols, cards):
@@ -904,7 +904,8 @@ def render_executive(result: dict) -> None:
     total_liters = float(result.get("total_liters", 0.0))
     peak_probability = float(result.get("max_leak_probability", 0.0))
     confidence = float(result.get("confidence", 0.0)) if has_leak else 0.0
-    cost_per_day = float(result.get("leak_lpm", 0.0)) * WATER_COST_PER_LITER * 60 * 24 if has_leak else 0.0
+    cost_per_hour = calculate_financial_loss(float(result.get("leak_lpm", 0.0))) if has_leak else 0.0
+    cost_per_day = cost_per_hour * 24.0
     risk_label = significance_level(total_liters)
     status_text = "Critical" if has_leak else "Stable"
 

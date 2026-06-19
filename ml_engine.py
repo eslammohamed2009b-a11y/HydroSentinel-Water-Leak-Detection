@@ -28,8 +28,8 @@ VALID_OCCUPANCY_STATUSES = {"Class_Hours", "After_Hours", "Vacation", "Event"}
 EVENT_OCCUPANCY_STATUS = "Event"
 MAX_FLOW_LPM = 500.0
 MAX_PRESSURE_PSI = 150.0
-WATER_COST_PER_LITER = 0.007
 WATER_COST_PER_M3 = 0.50
+WATER_COST_PER_LITER = WATER_COST_PER_M3 / 1000.0
 DENSITY_WATER = 1000
 DISCHARGE_COEFF = 0.62
 PSI_TO_PASCAL = 6894.76
@@ -111,16 +111,21 @@ class InsightEngine:
         liters_saved = max(float(total_liters), 0.0)
         m3_saved = liters_saved / 1000.0
         energy_saved_kwh = m3_saved * WATER_TREATMENT_ENERGY_KWH_PER_M3
-        carbon_saved_kg = energy_saved_kwh * GRID_EMISSION_KGCO2_PER_KWH
+        treatment_carbon_kg = m3_saved * 0.19
+        energy_carbon_kg = energy_saved_kwh * GRID_EMISSION_KGCO2_PER_KWH
+        carbon_saved_kg = calculate_carbon_footprint(liters_saved)
 
         return {
             "liters_saved": round(liters_saved, 1),
             "energy_saved_kwh": round(energy_saved_kwh, 2),
             "carbon_saved_kgco2e": round(carbon_saved_kg, 2),
+            "treatment_carbon_kgco2e": round(treatment_carbon_kg, 2),
+            "energy_carbon_kgco2e": round(energy_carbon_kg, 2),
             "narrative": (
                 f"Fixing this leak preserves about {liters_saved:,.0f} liters. "
                 f"That avoids roughly {energy_saved_kwh:.2f} kWh of pumping/treatment energy and "
-                f"prevents about {carbon_saved_kg:.2f} kgCO2e of associated emissions."
+                f"prevents about {carbon_saved_kg:.2f} kgCO2e of associated emissions "
+                f"({treatment_carbon_kg:.2f} from treatment + {energy_carbon_kg:.2f} from grid energy)."
             ),
         }
 
