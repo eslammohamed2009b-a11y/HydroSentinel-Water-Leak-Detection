@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import json
 import hashlib
-import io
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -37,6 +35,12 @@ SAMPLE_FILES = {
     "normal": [APP_DIR / "normal.csv"],
     "event": [APP_DIR / "event.csv"],
 }
+SCENARIO_FILES = {
+    "Scenario A - Baseline Normal Day": APP_DIR / "normal.csv",
+    "Scenario B - Normal Day + Leak": APP_DIR / "normal_leak.csv",
+    "Scenario C - Event Day (No Leak)": APP_DIR / "event.csv",
+    "Scenario D - Event Day + Leak": APP_DIR / "event_leak.csv",
+}
 MODEL_PATH = APP_DIR / "hydrosentinel_isolation_forest.joblib"
 FEEDBACK_PATH = APP_DIR / "feedback.csv"
 LOGS_PATH = APP_DIR / "logs.csv"
@@ -46,11 +50,11 @@ def init_state() -> None:
     defaults = {
         "view_mode": "Operational",
         "event_mode": False,
-        "source_mode": "Upload CSV",
+        "source_mode": "Scenario Matrix",
+        "scenario_selected": "Scenario A - Baseline Normal Day",
         "analysis_requested": False,
         "analysis_result": None,
         "analysis_error": None,
-        "uploaded_file_name": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -325,10 +329,10 @@ def get_ui_data(as_json: bool = False, result: dict | None = None):
 
     try:
         session_event_mode = bool(st.session_state.get("event_mode", False))
-        session_source_mode = st.session_state.get("source_mode", "Upload CSV")
+        session_source_mode = st.session_state.get("source_mode", "Scenario Matrix")
     except Exception:
         session_event_mode = False
-        session_source_mode = "Upload CSV"
+        session_source_mode = "Scenario Matrix"
 
     payload = {
         "has_leak": bool(data.get("has_leak", False)),
@@ -425,43 +429,14 @@ def significance_level(total_liters: float) -> str:
     return "Severe"
 
 
-def generate_demo_data(event_mode: bool) -> pd.DataFrame:
-    rng = np.random.default_rng(42)
-    timestamps = pd.date_range("2026-06-18 08:00:00", periods=12, freq="h")
-    rows = []
-    for idx, timestamp in enumerate(timestamps):
-        if idx < 5:
-            status = "Class_Hours"
-            flow = 14.7 + rng.normal(0, 0.7)
-            pressure = 52.0 + rng.normal(0, 0.6)
-        elif idx < 8:
-            status = "Event" if event_mode else "Class_Hours"
-            flow = (18.0 if event_mode else 16.0) + rng.normal(0, 0.8)
-            pressure = (50.2 if event_mode else 51.2) + rng.normal(0, 0.6)
-        else:
-            status = "After_Hours"
-            flow = 14.5 + (22 if idx >= 10 else 10) + rng.normal(0, 1.0)
-            pressure = 52.0 - (11 if idx >= 10 else 4) + rng.normal(0, 0.8)
-
-        rows.append(
-            {
-                "Timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-                "Flow_Rate_LPM": round(max(flow, 0.1), 1),
-                "Avg_Pressure_PSI": round(max(pressure, 1.0), 1),
-                "Occupancy_Status": status,
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def load_target_dataframe(source_mode: str, uploaded_file, event_mode: bool) -> tuple[pd.DataFrame, dict]:
-    if source_mode == "Live Demo":
-        raw_df = generate_demo_data(event_mode)
-    else:
-        if uploaded_file is None:
-            raise ValueError("Please upload a CSV file before analyzing.")
-        raw_df = pd.read_csv(io.BytesIO(uploaded_file.getvalue()))
-    return validate_and_clean_data(raw_df, "analysis data")
+def load_target_dataframe(scenario_selected: str) -> tuple[pd.DataFrame, dict]:
+    scenario_path = SCENARIO_FILES.get(scenario_selected)
+    if scenario_path is None:
+        raise ValueError(f"Unknown scenario selected: {scenario_selected}")
+    if not scenario_path.exists():
+        raise FileNotFoundError(f"Scenario file not found: {scenario_path.name}")
+    raw_df = pd.read_csv(scenario_path)
+    return validate_and_clean_data(raw_df, f"analysis data ({scenario_path.name})")
 
 
 def load_training_dataframe(event_mode: bool) -> tuple[pd.DataFrame, dict]:
@@ -500,7 +475,7 @@ def build_recommendations(result: dict) -> list[dict]:
     ]
 
 
-def render_sidebar() -> tuple[str, bool, str, object | None, bool]:
+def render_sidebar() -> tuple[str, bool, str, bool]:
     with st.sidebar:
         st.markdown(
             """
@@ -512,24 +487,15 @@ def render_sidebar() -> tuple[str, bool, str, object | None, bool]:
             unsafe_allow_html=True,
         )
 
-        st.markdown('<div class="sidebar-section-title">Data Source</div>', unsafe_allow_html=True)
-        source_mode = st.radio(
-            "Data Source",
-            ["Upload CSV", "Live Demo"],
-            label_visibility="collapsed",
-            key="source_mode_radio",
+        st.markdown('<div class="sidebar-section-title">Official Data Source</div>', unsafe_allow_html=True)
+        scenario_selected = st.selectbox(
+            "Scenario Matrix",
+            list(SCENARIO_FILES.keys()),
+            index=list(SCENARIO_FILES.keys()).index(st.session_state.get("scenario_selected", "Scenario A - Baseline Normal Day")) if st.session_state.get("scenario_selected", "Scenario A - Baseline Normal Day") in SCENARIO_FILES else 0,
+            key="scenario_matrix_selector",
+            help="Run analysis only on official local Scenario Matrix files.",
         )
-
-        uploaded_file = None
-        if source_mode == "Upload CSV":
-            uploaded_file = st.file_uploader(
-                "Upload water telemetry CSV",
-                type=["csv"],
-                label_visibility="collapsed",
-                key="telemetry_uploader",
-            )
-            if uploaded_file is not None:
-                st.session_state["uploaded_file_name"] = uploaded_file.name
+        st.session_state["scenario_selected"] = scenario_selected
 
         st.markdown('<div class="sidebar-section-title">Event Mode</div>', unsafe_allow_html=True)
         st.session_state["event_mode"] = st.toggle(
@@ -562,23 +528,21 @@ def render_sidebar() -> tuple[str, bool, str, object | None, bool]:
         if st.button("Analyze", use_container_width=True):
             st.session_state["analysis_requested"] = True
 
-        st.markdown('<div class="sidebar-section-title">Action</div>', unsafe_allow_html=True)
-        st.button("Upload CSV", use_container_width=True, disabled=True)
-
-    return source_mode, st.session_state["event_mode"], st.session_state["view_mode"], uploaded_file, bool(st.session_state.get("analysis_requested"))
+    return scenario_selected, st.session_state["event_mode"], st.session_state["view_mode"], bool(st.session_state.get("analysis_requested"))
 
 
-def perform_analysis(source_mode: str, uploaded_file, event_mode: bool) -> None:
+def perform_analysis(scenario_selected: str, event_mode: bool) -> None:
     st.session_state["analysis_error"] = None
     try:
         training_df, training_summary = load_training_dataframe(event_mode)
-        target_df, target_summary = load_target_dataframe(source_mode, uploaded_file, event_mode)
+        target_df, target_summary = load_target_dataframe(scenario_selected)
         _, model_reused = ensure_diagnostic_model(training_df, MODEL_PATH)
         result = evaluate_telemetry(target_df, MODEL_PATH, event_mode=event_mode)
         analysis_id = build_analysis_id(target_df)
         result["analysis_id"] = analysis_id
         result["model_reused"] = model_reused
-        result["source_mode"] = source_mode
+        result["source_mode"] = "Scenario Matrix"
+        result["scenario_selected"] = scenario_selected
         result["event_mode"] = event_mode
         result["training_summary"] = training_summary
         result["target_summary"] = target_summary
@@ -1024,8 +988,8 @@ def main() -> None:
     init_state()
     inject_styles()
 
-    source_mode, event_mode, view_mode, uploaded_file, analyze_requested = render_sidebar()
-    st.session_state["source_mode"] = source_mode
+    scenario_selected, event_mode, view_mode, analyze_requested = render_sidebar()
+    st.session_state["source_mode"] = "Scenario Matrix"
     st.session_state["view_mode"] = view_mode
 
     render_header(event_mode)
@@ -1034,7 +998,7 @@ def main() -> None:
     render_data_documentation()
 
     if analyze_requested:
-        perform_analysis(source_mode, uploaded_file, event_mode)
+        perform_analysis(scenario_selected, event_mode)
         st.session_state["analysis_requested"] = False
 
     result = st.session_state.get("analysis_result")
@@ -1044,7 +1008,7 @@ def main() -> None:
         st.error(f"We couldn't run the analysis: {analysis_error}")
 
     if result is None and not analysis_error:
-        st.info("Upload a telemetry CSV or run the live demo, then press Analyze to see the dashboard.")
+        st.info("Choose one of the official Scenario Matrix datasets in the sidebar, then press Analyze.")
         return
 
     if result is not None:
