@@ -178,6 +178,276 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+st.markdown("""
+    <style>
+    :root {
+        --surface: #f7f9fb;
+        --panel: #ffffff;
+        --ink: #191c1e;
+        --ink-soft: #414750;
+        --outline: #727781;
+        --outline-soft: #c1c7d2;
+        --primary: #004275;
+        --primary-soft: #d2e4ff;
+        --secondary: #006a61;
+        --secondary-soft: #eaf6ee;
+        --warning: #b9791a;
+        --warning-soft: #fcf1de;
+        --critical: #ba1a1a;
+        --critical-soft: #ffdad6;
+        --sidebar: #2d3133;
+    }
+
+    [data-testid="stHeader"], #MainMenu, footer {
+        display: none;
+    }
+
+    html, body, .main, [data-testid="stAppViewContainer"] {
+        background: var(--surface);
+        color: var(--ink);
+        font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+    }
+
+    [data-testid="stSidebar"] {
+        background: var(--sidebar);
+        border-right: 1px solid rgba(255,255,255,0.08);
+    }
+
+    [data-testid="stSidebar"] * {
+        color: #eff1f3;
+    }
+
+    [data-testid="stSidebar"] .stSelectbox label,
+    [data-testid="stSidebar"] .stRadio label,
+    [data-testid="stSidebar"] .stToggle label,
+    [data-testid="stSidebar"] .stCaption,
+    [data-testid="stSidebar"] .stMarkdown {
+        color: #eff1f3;
+    }
+
+    [data-testid="stSidebar"] .stButton > button {
+        background: var(--primary);
+        color: #fff;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 12px;
+        padding: 0.8rem 1rem;
+        font-weight: 800;
+        width: 100%;
+    }
+
+    .app-title {
+        font-size: 2.35rem;
+        line-height: 1.05;
+        font-weight: 800;
+        color: var(--primary);
+        letter-spacing: -0.04em;
+        margin-bottom: 4px;
+    }
+
+    .app-subtitle {
+        color: var(--ink-soft);
+        font-size: 1rem;
+        line-height: 1.5;
+        margin-bottom: 14px;
+    }
+
+    .pipeline-wrap {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin: 8px 0 24px 0;
+        padding: 18px 20px;
+        flex-wrap: wrap;
+        background: var(--panel);
+        border: 1px solid var(--outline-soft);
+        border-radius: 14px;
+    }
+
+    .pipeline-step {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: var(--primary);
+        font-size: 0.94rem;
+        font-weight: 700;
+        flex: 1;
+        min-width: 170px;
+    }
+
+    .pipeline-step .num {
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
+        background: var(--primary);
+        color: #fff;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 800;
+    }
+
+    .pipeline-step.is-muted {
+        color: var(--ink-soft);
+    }
+
+    .pipeline-step.is-muted .num {
+        background: transparent;
+        color: var(--outline);
+        border: 2px solid var(--outline-soft);
+    }
+
+    .pipeline-arrow { color: var(--outline); font-size: 1.2rem; }
+
+    .status-banner {
+        border-radius: 16px;
+        padding: 20px 22px;
+        margin-bottom: 24px;
+        border: 1px solid;
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        align-items: center;
+    }
+
+    .status-banner.critical { background: var(--critical); border-color: var(--critical); color: #fff; }
+    .status-banner.ok { background: var(--secondary); border-color: var(--secondary); color: #fff; }
+    .status-headline { font-weight: 800; font-size: 1.2rem; margin-bottom: 4px; }
+    .status-sub { font-size: 0.94rem; opacity: 0.96; }
+
+    .answer-card {
+        background: var(--panel);
+        border: 1px solid var(--outline-soft);
+        border-radius: 14px;
+        padding: 18px 18px;
+        height: 100%;
+        min-height: 148px;
+        box-shadow: 0 2px 10px rgba(17, 24, 39, 0.03);
+    }
+
+    .answer-card .label {
+        font-size: 0.72rem;
+        color: var(--ink-soft);
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 12px;
+    }
+
+    .answer-card .value {
+        font-size: 2rem;
+        font-weight: 800;
+        color: var(--primary);
+        line-height: 1.08;
+    }
+
+    .answer-card .footnote {
+        font-size: 0.8rem;
+        color: var(--ink-soft);
+        margin-top: 10px;
+    }
+
+    .answer-card.accent-critical { border-left: 4px solid var(--critical); }
+    .answer-card.accent-warning { border-left: 4px solid var(--warning); }
+    .answer-card.accent-ok { border-left: 4px solid var(--secondary); }
+    .answer-card.accent-info { border-left: 4px solid var(--primary); }
+
+    .why-card,
+    .action-card,
+    .env-card,
+    .rai-card,
+    .exec-card,
+    .exec-shell {
+        background: var(--panel);
+        border: 1px solid var(--outline-soft);
+        border-radius: 14px;
+    }
+
+    .why-card {
+        border-left: 4px solid var(--primary);
+        padding: 18px 20px;
+        margin-bottom: 16px;
+    }
+
+    .why-title { font-weight: 800; color: var(--ink); font-size: 1.05rem; margin-bottom: 10px; }
+    .why-evidence { font-size: 0.82rem; color: var(--ink-soft); background: var(--surface); padding: 8px 10px; border-radius: 8px; display: block; }
+    .confidence-tag { display: inline-block; background: var(--primary-soft); color: var(--primary); font-size: 0.78rem; font-weight: 800; padding: 4px 10px; border-radius: 999px; margin-bottom: 10px; }
+
+    .action-card {
+        padding: 18px 20px;
+        margin-bottom: 16px;
+    }
+
+    .action-card.priority-high { border-left: 4px solid var(--critical); }
+    .action-card.priority-medium { border-left: 4px solid var(--warning); }
+    .action-card.priority-low { border-left: 4px solid var(--secondary); }
+    .action-tag { font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; padding: 4px 10px; border-radius: 999px; }
+    .action-tag.high { background: var(--critical-soft); color: var(--critical); }
+    .action-tag.medium { background: var(--warning-soft); color: var(--warning); }
+    .action-tag.low { background: var(--primary-soft); color: var(--primary); }
+    .action-title { font-weight: 800; font-size: 1.02rem; margin: 10px 0 12px 0; }
+
+    .env-card {
+        background: var(--secondary-soft);
+        border: 1px solid var(--secondary);
+        padding: 20px 22px;
+        margin-bottom: 24px;
+    }
+
+    .env-card h4 { font-weight: 800; color: var(--secondary); margin: 0 0 12px 0; font-size: 1.05rem; }
+    .env-stat .num { font-weight: 800; font-size: 1.3rem; color: var(--ink); }
+    .env-stat .lbl { font-size: 0.8rem; color: var(--ink-soft); }
+
+    .rai-card {
+        padding: 20px 22px;
+        margin-top: 28px;
+    }
+
+    .rai-card h4 { font-weight: 800; margin-top: 0; border-bottom: 1px solid var(--outline-soft); padding-bottom: 10px; }
+
+    .exec-shell {
+        padding: 20px;
+        margin-bottom: 24px;
+    }
+
+    .exec-grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 24px;
+    }
+
+    .exec-card {
+        padding: 18px;
+        height: 100%;
+    }
+
+    .exec-label {
+        color: var(--ink-soft);
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 10px;
+    }
+
+    .exec-value {
+        color: var(--primary);
+        font-size: 2rem;
+        font-weight: 800;
+        line-height: 1.05;
+    }
+
+    .exec-note {
+        color: var(--ink-soft);
+        font-size: 0.9rem;
+        line-height: 1.55;
+        margin-top: 10px;
+    }
+
+    div[data-testid="stMetricValue"] { font-size: 1.85rem; font-weight: 800; color: var(--primary); }
+    div[data-testid="stMetricLabel"] { color: var(--ink-soft); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.74rem; }
+    </style>
+""", unsafe_allow_html=True)
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
@@ -298,6 +568,12 @@ with st.sidebar:
     else:
         st.caption("Event Mode is OFF: model focuses on standard school-day usage patterns.")
 
+    view_mode = st.selectbox(
+        "Dashboard View",
+        ["Operational clarity", "Executive summary"],
+        help="Operational clarity is optimized for technicians; executive summary is optimized for leadership updates.",
+    )
+
     uploaded_file = None
     stream_trigger = False
     if mode == "Upload a CSV file":
@@ -328,20 +604,19 @@ with st.sidebar:
 # =============================================================================
 st.markdown('<div class="app-title">HydroSentinel AI</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="app-subtitle">A real-world decision-support system for school water infrastructure — '
-    'helping maintenance teams catch hidden leaks early, understand why they happened, and decide what to do next.</div>',
+    '<div class="app-subtitle">Intelligent water security for schools. Operational and executive views keep maintenance teams and leadership aligned on leak risk, impact, and response.</div>',
     unsafe_allow_html=True,
 )
 
 st.markdown("""
     <div class="pipeline-wrap">
-        <div class="pipeline-step"><span class="num">1</span> 📥 Sensor Readings</div>
+        <div class="pipeline-step"><span class="num">1</span> Sensor Readings</div>
         <div class="pipeline-arrow">→</div>
-        <div class="pipeline-step"><span class="num">2</span> 🔎 Pattern Analysis</div>
+        <div class="pipeline-step"><span class="num">2</span> Pattern Analysis</div>
         <div class="pipeline-arrow">→</div>
-        <div class="pipeline-step"><span class="num">3</span> 🌍 Environmental Insight</div>
+        <div class="pipeline-step is-muted"><span class="num">3</span> Environmental Insight</div>
         <div class="pipeline-arrow">→</div>
-        <div class="pipeline-step"><span class="num">4</span> ✅ Recommended Action</div>
+        <div class="pipeline-step is-muted"><span class="num">4</span> Recommended Action</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -798,6 +1073,165 @@ if should_render_dashboard:
 
             if not res["time_parsed"]:
                 st.caption("Note: we couldn't read dates/times from the Timestamp column, so time-of-day context wasn't used in this analysis.")
+
+            if view_mode == "Executive summary":
+                total_liters = float(res.get("total_liters", 0.0))
+                peak_probability = float(res.get("max_leak_probability", 0.0))
+                confidence = float(res.get("confidence", 0.0))
+                cost_per_day = round(float(res.get("leak_lpm", 0.0)) * WATER_COST_PER_LITER * 60 * 24, 2) if res["has_leak"] else 0.0
+                hourly_loss = round(float(res.get("leak_lpm", 0.0)) * WATER_COST_PER_LITER * 60, 2) if res["has_leak"] else 0.0
+                event_rows = int(res.get("event_rows", 0))
+                executive_score = "A+" if not res["has_leak"] else ("B" if confidence < 80 else "C")
+                risk_label = significance_level(total_liters)
+
+                st.markdown(
+                    f"""
+                    <div class="exec-shell">
+                        <div class="exec-grid">
+                            <div style="grid-column: span 12;">
+                                <div class="exec-label">Institutional Safety Overview</div>
+                                <div class="app-subtitle" style="margin-bottom:0;">High-level impact snapshot built from the current telemetry analysis. This view is better for leadership briefings and operational reviews.</div>
+                            </div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                summary_cols = st.columns(4)
+                with summary_cols[0]:
+                    st.markdown(
+                        f"""
+                        <div class="answer-card accent-info">
+                            <div class="label">Water at risk</div>
+                            <div class="value">{total_liters:,.1f} L</div>
+                            <div class="footnote">Estimated anomalous water in this run</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with summary_cols[1]:
+                    st.markdown(
+                        f"""
+                        <div class="answer-card accent-warning">
+                            <div class="label">Peak leak probability</div>
+                            <div class="value">{peak_probability:.1f}%</div>
+                            <div class="footnote">Highest event-level leak likelihood</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with summary_cols[2]:
+                    st.markdown(
+                        f"""
+                        <div class="answer-card accent-ok">
+                            <div class="label">Event mode</div>
+                            <div class="value">{'ON' if res.get('event_mode', False) else 'OFF'}</div>
+                            <div class="footnote">Event rows observed: {event_rows}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with summary_cols[3]:
+                    st.markdown(
+                        f"""
+                        <div class="answer-card accent-critical">
+                            <div class="label">Executive status</div>
+                            <div class="value">{executive_score}</div>
+                            <div class="footnote">Leadership-ready health indicator</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                left_col, right_col = st.columns([2, 1])
+                with left_col:
+                    st.markdown(
+                        """
+                        <div class="exec-card">
+                            <div class="exec-label">Monthly leak trends</div>
+                            <div class="exec-note" style="margin-top:0;">Detection efficiency vs event frequency, shown as the live flow trace from the current analysis.</div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    executive_fig = go.Figure()
+                    executive_fig.add_trace(go.Scatter(
+                        x=target_df["Timestamp"],
+                        y=target_df["Flow_Rate_LPM"],
+                        mode="lines",
+                        name="Flow",
+                        line=dict(color="#004275", width=3),
+                        fill="tozeroy",
+                        fillcolor="rgba(0, 66, 117, 0.10)",
+                    ))
+                    if res["has_leak"]:
+                        executive_fig.add_trace(go.Scatter(
+                            x=res["anomalies"]["Timestamp"],
+                            y=res["anomalies"]["Flow_Rate_LPM"],
+                            mode="markers",
+                            name="Flagged",
+                            marker=dict(color="#ba1a1a", size=10, symbol="circle"),
+                        ))
+                    executive_fig.update_layout(
+                        template="plotly_white",
+                        paper_bgcolor="#ffffff",
+                        plot_bgcolor="#ffffff",
+                        margin=dict(l=28, r=20, t=10, b=30),
+                        height=340,
+                        showlegend=False,
+                        xaxis=dict(title="Time", gridcolor="#eef2f1"),
+                        yaxis=dict(title="Flow (L/min)", gridcolor="#eef2f1"),
+                    )
+                    st.plotly_chart(executive_fig, use_container_width=True)
+                    st.markdown(
+                        f"""
+                        <div style="display:flex;justify-content:space-between;gap:16px;margin-top:10px;">
+                            <div><div class="exec-label">Cost exposure</div><div class="exec-value" style="font-size:1.45rem;">${cost_per_day:,.2f}/day</div></div>
+                            <div style="text-align:right;"><div class="exec-label">Training coverage</div><div class="exec-value" style="font-size:1.45rem;">{training_summary.get('valid_rows', 0):,}</div><div class="exec-note">valid rows used for model context</div></div>
+                        </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                with right_col:
+                    sustainability_desc = "Healthy operating profile with no active leak pattern." if not res["has_leak"] else "Leak pressure is present; fixing it improves sustainability immediately."
+                    budget_loss = hourly_loss if res["has_leak"] else 0.0
+                    st.markdown(
+                        f"""
+                        <div class="exec-card" style="margin-bottom:24px;">
+                            <div class="exec-label">Sustainability score</div>
+                            <div class="exec-value">{executive_score}</div>
+                            <div class="exec-note">{sustainability_desc}</div>
+                        </div>
+                        <div class="exec-card" style="margin-bottom:24px;">
+                            <div class="exec-label">Budget allocation</div>
+                            <div class="exec-note" style="margin-top:0;">Comparison of automated sentinel monitoring vs manual checks.</div>
+                            <div style="display:flex; justify-content:space-between; margin-top:16px; gap:12px;">
+                                <div><div class="exec-label">Hourly loss</div><div class="exec-value" style="font-size:1.4rem;">${budget_loss:,.2f}</div></div>
+                                <div style="text-align:right;"><div class="exec-label">Risk tier</div><div class="exec-value" style="font-size:1.4rem;">{risk_label}</div></div>
+                            </div>
+                        </div>
+                        <div class="exec-card">
+                            <div class="exec-label">Model performance logic</div>
+                            <div class="exec-note" style="margin-top:0;">HydroSentinel uses labeled flow, pressure, occupancy, hour, and weekend context. Event Mode includes school event patterns so legitimate gatherings are less likely to trigger a false alarm.</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown(
+                    """
+                    <div class="rai-card">
+                        <h4>Responsible AI notice</h4>
+                        <div class="rai-item"><b>Human review remains mandatory.</b> HydroSentinel supports maintenance decisions; it does not take control actions automatically.</div>
+                        <div class="rai-item"><b>Event Mode improves context.</b> It helps distinguish school events from abnormal leaks when the occupancy pattern is expected to change.</div>
+                        <div class="rai-item"><b>Validation matters.</b> The model reuses a persisted diagnostic bundle only when the labeled training fingerprint still matches the current data context.</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.stop()
 
             probability_value = float(res.get("confidence", 0.0)) if res["has_leak"] else 0.0
             status_label, status_color = probability_status(probability_value)
