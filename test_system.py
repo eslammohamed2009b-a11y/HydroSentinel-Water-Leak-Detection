@@ -21,10 +21,7 @@ class HydroSentinelSystemTests(unittest.TestCase):
         cls.project_dir = Path(__file__).resolve().parent
         cls.model_path = cls.project_dir / "test_hydrosentinel_isolation_forest.joblib"
 
-        cls.normal_group = [
-            cls.project_dir / "normal.csv",
-            cls.project_dir / "example_normal_day_2026-10-05.csv",
-        ]
+        cls.normal_group = [cls.project_dir / "normal.csv"]
         cls.event_group = [cls.project_dir / "event.csv"]
 
         cls.training_df = ml_engine.load_training_labels_for_mode(
@@ -97,6 +94,28 @@ class HydroSentinelSystemTests(unittest.TestCase):
         json_payload = app.get_ui_data(as_json=True, result=result)
         self.assertIsInstance(json_payload, str)
         self.assertIn("reasoning_string", json_payload)
+
+    def test_scenario_matrix_csvs_are_readable_and_evaluable(self):
+        """All four scenario files should be readable and evaluable by the engine."""
+        scenarios = [
+            ("normal.csv", False, False),
+            ("normal_leak.csv", False, True),
+            ("event.csv", True, False),
+            ("event_leak.csv", True, True),
+        ]
+
+        for filename, event_mode, expected_has_leak in scenarios:
+            with self.subTest(scenario=filename):
+                df = pd.read_csv(self.project_dir / filename)
+                cleaned_df, summary = ml_engine.validate_and_clean_data(df, filename)
+                self.assertGreater(summary["valid_rows"], 0)
+                result = ml_engine.evaluate_telemetry(cleaned_df, self.model_path, event_mode=event_mode)
+                self.assertIn("has_leak", result)
+                self.assertIn("insights", result)
+                self.assertIn("reasoning_string", result)
+                self.assertIn("financial", result["insights"])
+                self.assertIn("environmental", result["insights"])
+                self.assertEqual(result["has_leak"], expected_has_leak)
 
 
 if __name__ == "__main__":

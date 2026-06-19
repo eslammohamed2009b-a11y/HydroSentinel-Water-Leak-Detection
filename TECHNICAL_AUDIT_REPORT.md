@@ -1,399 +1,270 @@
-﻿# HydroSentinel-AI Engineering Audit (Deep Dive v2)
+﻿# HydroSentinel-AI Technical Report (Scenario Matrix Edition)
 
 Date: 2026-06-19  
 Project: HydroSentinel-AI  
-Prepared for: Technical Judges Panel  
-System Type: AI-Powered Water Leak Decision Support for Schools
+Release Tag: Scenario Matrix Upgrade  
+Audience: Judges and Technical Reviewers  
+System Positioning: Decision Support for Human Operators (No Autonomous Actuation)
 
 ---
 
-## Executive Statement
+## Executive Summary
 
-HydroSentinel-AI is a production-structured decision support platform that combines telemetry validation, context-aware ML inference, explainable reasoning, and quantified financial/environmental impact in one Streamlit-based operating surface.
+HydroSentinel-AI is a machine-learning-based decision-support platform for school water infrastructure. It detects anomalous telemetry patterns, estimates leak severity and impact, and explains why alerts were generated.
 
-This v2 audit documents the complete engineering posture after unifying core equations in code (cost and carbon), and verifies operational consistency across UI, inference engine, and JSON API outputs.
+In this release, the project was upgraded with a formal 4-scenario test matrix to improve demonstration coverage and evaluation rigor:
 
-Verification outcome in this cycle:
-- Unit tests: PASS (3/3)
-- Compile checks: PASS
-- Data download integration in UI: PASS
-- Formula unification: PASS
+1. `normal.csv` -> Baseline school day (no leak)
+2. `normal_leak.csv` -> Normal school day + leak injection
+3. `event.csv` -> Event day (no leak)
+4. `event_leak.csv` -> Event day + leak
 
----
-
-## 1) System Architecture (Code-Accurate)
-
-### 1.1 Runtime Layers
-
-1. Presentation Layer
-- Implemented in `app.py` via Streamlit.
-- Provides:
-  - Operational Clarity view
-  - Executive Summary view
-  - Event Mode toggle
-  - CSV upload/live demo input
-  - Simulation-data documentation + download controls
-
-2. Intelligence Layer
-- Implemented in `ml_engine.py`.
-- Responsibilities:
-  - Data schema validation and cleaning
-  - Feature engineering (hour/weekend context)
-  - Diagnostic model train/load/reuse
-  - Inference, confidence scoring, leak type inference
-  - Financial and environmental insight synthesis
-
-3. Data/Artifacts Layer
-- CSV telemetry sets:
-  - `normal.csv`
-  - `event.csv`
-  - `event_leak.csv`
-  - `example_normal_day_2026-10-05.csv`
-- Persistent model artifact:
-  - `hydrosentinel_isolation_forest.joblib`
-- Audit/feedback logs:
-  - `logs.csv`
-  - `feedback.csv`
-
-### 1.2 End-to-End Flow
-
-1. Input (uploaded CSV or synthetic stream)
-2. Validation (`validate_and_clean_data`)
-3. Mode-aware training set loading
-4. Diagnostic model ensure/load (`ensure_diagnostic_model`)
-5. Inference (`evaluate_telemetry`)
-6. Insight generation (reasoning + cost + carbon + recommendations)
-7. API-ready serialization (`get_ui_data`)
-8. Logging and feedback persistence
+This matrix explicitly separates event-driven legitimate consumption from leak behavior, which is the core reliability requirement for schools.
 
 ---
 
-## 2) Data UI Integration (Simulation Download Controls)
+## 1) Architecture Overview
 
-Implemented controls:
-- Added `st.download_button` entries for each simulation file:
-  - `normal.csv`
-  - `event.csv`
-  - `event_leak.csv`
-  - `example_normal_day_2026-10-05.csv`
-- Buttons are labeled with `Simulation Data` to avoid misclassification as live IoT input.
-- Added descriptive tooltip to explain synthetic origin and use-case.
+### 1.1 Presentation Layer (`app.py`)
 
-Engineering value:
-- Reproducibility for judges.
-- Transparent provenance of training/evaluation data.
-- Better governance posture for AI demonstrations.
+- Streamlit-based interactive dashboard
+- Operational and executive views
+- Event Mode toggle
+- CSV upload + simulation-data documentation
+- Download buttons for the four official scenario files
 
----
+### 1.2 Intelligence Layer (`ml_engine.py`)
 
-## 3) Data Generation Deep Dive (CSV + Simulation)
+- Input schema validation and row-level cleaning
+- Model training/reuse lifecycle
+- Diagnostic inference (classification + regression)
+- Explainability and impact calculations
+- API-ready result packaging
 
-### 3.1 Canonical Telemetry Schema
+### 1.3 Persistence Layer
 
-Primary fields:
-- `Timestamp` (datetime string)
-- `Flow_Rate_LPM` (float)
-- `Avg_Pressure_PSI` (float)
-- `Occupancy_Status` (categorical)
-
-Validator-enforced constraints:
-- Required columns must exist.
-- Flow must be numeric and in `[0, 500]`.
-- Pressure must be numeric and in `(0, 150]`.
-- Occupancy must be one of:
-  - `Class_Hours`
-  - `After_Hours`
-  - `Vacation`
-  - `Event`
-
-### 3.2 Repository Dataset Characteristics
-
-1) `normal.csv`
-- 24 rows, hourly span over one day.
-- Stable baseline around 14-16 LPM and ~50 PSI.
-- Represents non-leak school operation.
-
-2) `event.csv`
-- 24 rows, event-influenced demand.
-- Elevated legitimate flow relative to normal baseline.
-- Designed to train event-context tolerance.
-
-3) `event_leak.csv`
-- 24 rows.
-- Elevated flow with pressure degradation signature.
-- Used to validate leak discrimination under heavier load.
-
-4) `example_normal_day_2026-10-05.csv`
-- Contains valid telemetry plus two commented annotation lines.
-- Validation layer excludes non-conforming lines safely.
-- Demonstrates event-like bump then return to baseline.
-
-### 3.3 Synthetic Generation Mechanisms
-
-A) `generate_data.py`
-- Simulates calendar seasonality for school operation.
-- Encodes break periods (e.g., summer/winter behavior).
-- Injects leak cases by:
-  - Increasing flow (hydraulic anomaly)
-  - Reducing pressure (supply stress proxy)
-
-B) `generate_data_new.py`
-- Uses academic-year framing.
-- Adds winter/spring/summer break windows explicitly.
-- Uses Gaussian baselines with clipping to realistic bounds.
-- Injects `leak_normal` and `leak_event` states with differentiated severity.
-
-### 3.4 Scientific Rationale For Simulation
-
-Given no physical IoT deployment in this stage, synthetic telemetry is used as a controlled experimental substitute to:
-- Reproduce normal and abnormal regimes deterministically.
-- Stress-test model response across occupancy contexts.
-- Validate UI/ML/API coupling before hardware rollout.
+- Scenario CSV files
+- Model artifact (`hydrosentinel_isolation_forest.joblib`)
+- Feedback and run logs (`feedback.csv`, `logs.csv`)
 
 ---
 
-## 4) Tech Stack And Library Role Map
+## 2) Scenario Matrix (Official)
 
-Core dependencies (runtime):
-- `streamlit`: dashboard and interactive controls.
-- `pandas`: CSV I/O, cleaning, tabular transformations.
-- `numpy`: numerical ops, randomization, clipping, scoring transforms.
-- `scikit-learn`: model pipelines and estimators.
-  - `RandomForestClassifier` for leak type prediction.
-  - `LinearRegression` for leak-loss LPM estimation.
-  - `ColumnTransformer` + `OneHotEncoder` for mixed feature preprocessing.
-- `plotly`: visual analytics for telemetry and anomaly markers.
-- `joblib`: model artifact persistence.
+### 2.1 Why This Matrix Matters
 
-Stdlib support:
-- `pathlib`, `json`, `hashlib`, `io`, `sys`.
+A single "normal vs leak" split is insufficient for school environments, because event days produce legitimate demand spikes that can resemble leaks if context is ignored. The scenario matrix provides structured evidence of model discrimination across both occupancy and fault dimensions.
 
----
+### 2.2 Scenario Definitions
 
-## 5) AI Logic: ML vs Hard-coded Thresholding
+| Scenario | File | Expected Behavior | Purpose |
+|---|---|---|---|
+| A | `normal.csv` | No leak flag | Baseline reference for routine day |
+| B | `normal_leak.csv` | Leak signature should emerge | Validate leak sensitivity under normal occupancy |
+| C | `event.csv` | Elevated usage but no leak | Validate false-positive control under event load |
+| D | `event_leak.csv` | Leak under event context | Validate robustness under combined complexity |
 
-### 5.1 Why Static If/Else Is Weak
+### 2.3 Current Data Characteristics
 
-Hard-coded policies such as:
-- `if flow > X: leak`
+All four files use the canonical schema:
+- `Timestamp`
+- `Flow_Rate_LPM`
+- `Avg_Pressure_PSI`
+- `Occupancy_Status`
 
-fail in schools because usage shifts by:
-- timetable,
-- events,
-- occupancy,
-- seasonality.
-
-The same absolute flow can be normal or anomalous depending on context.
-
-### 5.2 Current Inference Strategy
-
-HydroSentinel uses supervised diagnostic inference in production path:
-- Leak type classification (`RandomForestClassifier`)
-- Leak-loss estimation (`LinearRegression`)
-
-Model outputs include:
-- Class prediction
-- Leak probability/confidence
-- Predicted loss (LPM)
-- Feature contribution context (for explainability)
-
-Practical advantage:
-- Learns nonlinear interactions of flow-pressure-occupancy-time.
-- Reduces false alarms compared with static thresholds.
-- Produces confidence-aware decisions suitable for human review.
+Design logic:
+- `normal.csv`: stable flow/pressure baseline with class/after-hours transitions
+- `normal_leak.csv`: same baseline plus leak window injection (higher flow + lower pressure)
+- `event.csv`: event-driven demand elevation without leak degradation
+- `event_leak.csv`: elevated event demand with injected leak signature
 
 ---
 
-## 6) Physics-Based Computation (Unified)
+## 3) Data Generation Strategy
 
-### 6.1 Unified Cost Equation (Implemented)
+Synthetic telemetry generation was designed to be deterministic and reviewable for judging.
 
-Source-of-truth constants:
-- `WATER_COST_PER_M3 = 0.50`
-- `WATER_COST_PER_LITER = WATER_COST_PER_M3 / 1000`
+### 3.1 Baseline Synthesis
 
-For leak rate $L$ (liters/min):
+Normal-day baseline simulates:
+- Class-hour and after-hours occupancy segments
+- Slight natural variation in flow and pressure
+- No abrupt pressure-collapse signature
+
+### 3.2 Leak Injection Strategy
+
+Leak injection applies physically plausible directional change:
+- Flow increases above local baseline
+- Pressure drops below local baseline
+- Injected over a controlled time window to represent sustained fault behavior
+
+### 3.3 Event Day Synthesis
+
+Event-day non-leak pattern intentionally includes:
+- Higher legitimate demand
+- Maintained pressure within non-fault ranges
+- `Occupancy_Status='Event'` in event windows
+
+This allows direct testing that increased consumption alone is not treated as a leak.
+
+---
+
+## 4) Tech Stack and Libraries
+
+### 4.1 Core Dependencies
+
+- `streamlit`: UI runtime
+- `pandas`: CSV processing and data manipulation
+- `numpy`: numerical operations and synthetic generation support
+- `scikit-learn`: modeling pipelines and estimators
+- `plotly`: telemetry visualization
+- `joblib`: model persistence
+
+### 4.2 Model Components Used
+
+- `RandomForestClassifier`: leak-type classification and confidence
+- `LinearRegression`: predicted leak loss (L/min)
+- `ColumnTransformer` + `OneHotEncoder`: mixed numeric/categorical preprocessing
+
+---
+
+## 5) ML vs Hard-coded Rules
+
+### 5.1 Why ML Is Needed
+
+Hard-coded rules (e.g., fixed flow threshold) fail in schools because occupancy context changes behavior:
+- Event periods can legitimately exceed normal flow
+- Absolute thresholds cannot reliably separate demand surge vs leak
+
+### 5.2 Advantage of Current Pipeline
+
+The model can capture nonlinear interactions among:
+- flow,
+- pressure,
+- occupancy context,
+- time-derived features.
+
+This improves discrimination quality and supports confidence-weighted alerts instead of rigid binary rules.
+
+---
+
+## 6) Physics-Based and Financial Insight
+
+Let $L$ be leak rate in liters/min.
 
 $$
-\text{liters/hour} = L \times 60
+\text{Liters/hour} = L \times 60
 $$
 
 $$
 \text{m}^3/\text{hour} = \frac{L \times 60}{1000}
 $$
 
+Given `WATER_COST_PER_M3 = 0.50`:
+
 $$
-\text{cost/hour} = \frac{L \times 60}{1000} \times 0.50
+\text{Cost/hour} = \frac{L \times 60}{1000} \times 0.50
 $$
 
 $$
-\text{cost/day} = \text{cost/hour} \times 24
+\text{Cost/day} = \text{Cost/hour} \times 24
 $$
 
-Code unification actions completed:
-- UI now consumes `calculate_financial_loss(...)` for hourly cost display.
-- Executive day projection is derived from unified hourly cost (`* 24`).
-- Removed previous divergence between UI and engine tariff interpretations.
-
-### 6.2 Unified Carbon Equation (Implemented)
-
-Carbon now follows one canonical structure:
-
-$$
-\text{CO2e}_{\text{total}} = \text{CO2e}_{\text{treatment}} + \text{CO2e}_{\text{energy}}
-$$
-
-where:
-
-$$
-\text{CO2e}_{\text{treatment}} = m^3 \times 0.19
-$$
-
-$$
-\text{CO2e}_{\text{energy}} = \left(m^3 \times 0.45\right) \times 0.42
-$$
-
-The environmental insight object now aligns with `calculate_carbon_footprint(...)` and exposes:
-- total carbon,
-- treatment component,
-- energy component,
-- consistent narrative.
+Equation consistency status:
+- Unified in engine and Streamlit UI
+- KPI and executive cards now share the same source-of-truth equation path
 
 ---
 
-## 7) Environmental Impact Logic (Scientific Basis)
+## 7) Environmental Impact Logic
 
-HydroSentinel translates water leakage into sustainability metrics:
-- liters preserved,
-- pumping/treatment energy saved (`kWh`),
-- total avoided CO2e (`kgCO2e`).
+HydroSentinel estimates water-related carbon impact using two additive components:
 
-This aligns operational maintenance with ESG-style reporting by quantifying non-revenue water not only economically but climatically.
+1. Treatment emissions factor
+2. Energy emissions from pumping/treatment
 
----
+Canonical structure:
 
-## 8) Event Mode Logic (False-Positive Control)
+$$
+\text{CO2e}_{total} = \text{CO2e}_{treatment} + \text{CO2e}_{energy}
+$$
 
-Event Mode has two real technical effects:
+with:
 
-1) Context-aware model preparation
-- Event telemetry can be included in training context when mode is ON.
+$$
+\text{CO2e}_{energy} = (m^3 \times 0.45) \times 0.42
+$$
 
-2) Inference confidence gate
-- When Event Mode is OFF, event-status rows with low confidence are suppressed.
-- Prevents normal event surges from being misclassified as leaks.
-
-Scientific implication:
-- Lower Type-I false alarms during occupancy anomalies.
-- Better trust calibration for school operations.
+The reporting now exposes both component breakdown and total carbon value, improving transparency for sustainability review.
 
 ---
 
-## 9) Gap Analysis And Reliability (Post-Unification)
+## 8) Event Mode Logic
 
-### 9.1 Gap Assessment (Yes/No)
+Event Mode reduces false positives by integrating context into both training/evaluation paths:
 
-1. Cost equation consistency across UI/engine: YES (closed)
-2. Carbon equation consistency across insight paths: YES (closed)
-3. Simulation data download transparency in UI: YES (closed)
-4. Residual non-data comment rows in one CSV: NO (still open)
-5. Artifact naming reflects current hybrid diagnostic pipeline: NO (still open)
+- Event-context scenarios are included when mode is enabled
+- Confidence gating prevents low-confidence event spikes from being over-flagged
 
-### 9.2 Open Gaps (Remaining)
-
-A) Annotated CSV comments
-- `example_normal_day_2026-10-05.csv` includes inline comment rows.
-- Validation handles this safely, but pure-data hygiene can improve.
-
-B) Artifact naming legacy
-- `hydrosentinel_isolation_forest.joblib` name is historical.
-- Actual payload contains diagnostic classifier/regressor stack.
-
-Recommended closure:
-- Keep this sprint focused on naming/data hygiene only (low risk).
-
-### 9.3 Reliability Posture
-
-Evidence-backed strengths:
-- Input validation with row rejection safeguards.
-- Deterministic model reuse via training fingerprint.
-- API-ready output contract tested.
-- Event-aware suppression policy to reduce false positives.
-
-Operational boundary (must remain explicit):
-- HydroSentinel is Decision Support only.
-- No autonomous water shutoff or actuator control.
-- Final action remains human-authorized.
+Practical effect:
+- Better separation between legitimate event demand and leak signatures
+- Higher operator trust during school activities
 
 ---
 
-## 10) Verification Matrix
+## 9) Verification and Test Coverage
 
-### 10.1 Test Evidence
+### 9.1 Updated Test Coverage
 
-Executed:
-- `python test_system.py -v` -> PASS
-  - `test_model_bundle_loads_successfully` -> PASS
-  - `test_evaluate_telemetry_returns_expected_structure` -> PASS
-  - `test_get_ui_data_returns_json_ready_payload` -> PASS
+Test suite now includes scenario-matrix validation:
+- Reads and cleans each of the four scenario CSV files
+- Verifies engine can evaluate each scenario without contract breakage
+- Confirms required response keys and insight blocks are present
 
-- `python -m py_compile app.py ml_engine.py test_system.py` -> PASS
+### 9.2 Reliability Guardrails
 
-### 10.2 Contract Stability
-
-Confirmed output characteristics:
-- Leak boolean/status
-- Leak type and confidence
-- Financial section
-- Environmental section
-- Reasoning narrative
-- Event mode metadata
+- Strict schema validation before inference
+- Range checks for flow and pressure
+- Occupancy-status whitelist
+- JSON-ready output contract
+- Human-in-the-loop warning in UI
 
 ---
 
-## 11) Security, Governance, And Explainability Notes
+## 10) Gap Analysis
 
-1) Governance
-- Human-in-the-loop messaging is present in UI.
-- Decision-support scope is clearly bounded.
+### 10.1 Closed in This Release
 
-2) Explainability
-- Reasoning layer ties confidence to flow-pressure deltas and baseline context.
-- Feature driver names are surfaced for diagnostics.
+- Scenario matrix completeness for demo/testing
+- UI file naming clarity and simulation-data labeling
+- Equation consistency for cost and environmental reporting
 
-3) Auditability
-- Analysis IDs and log persistence support traceability.
+### 10.2 Remaining Improvement Opportunities
 
----
-
-## 12) Streamlit Delivery Status
-
-Streamlit-facing updates delivered in this cycle:
-- Simulation CSV download controls integrated.
-- Cost KPI logic now aligned with engine formula.
-- Executive/day projection computed from unified hourly cost.
-- Environmental narrative now reflects canonical total-carbon logic.
-
-This update is ready for immediate demo usage via Streamlit app execution.
+1. Rename model artifact to reflect hybrid diagnostic pipeline naming.
+2. Add dedicated threshold-regression tests for expected leak/no-leak outcomes per scenario.
+3. Introduce CI pipeline for automated test + lint + compile gates on push.
 
 ---
 
-## 13) Final Verdict For Judges
+## 11) Governance and Safety Position
 
-HydroSentinel-AI is technically coherent, auditable, and now materially more consistent after equation unification.
+HydroSentinel is a decision-support assistant only:
+- No autonomous valve control
+- No automatic physical intervention
+- Maintenance action remains human-approved
 
-Submission recommendation:
-- ACCEPT as a robust Decision Support prototype for school water infrastructure.
-
-Production-readiness recommendation:
-- Proceed to pilot with live sensor onboarding while preserving current validation and human-approval controls.
+This boundary is intentional and aligned with responsible AI deployment in school infrastructure.
 
 ---
 
-## 14) Next Engineering Sprint (Optional)
+## 12) Final Technical Verdict
 
-1. Clean comment rows from `example_normal_day_2026-10-05.csv` into documentation only.
-2. Rename model artifact to architecture-neutral naming.
-3. Add explicit unit tests for cost/carbon formula invariants.
-4. Add integration test for Event Mode confidence suppression behavior.
-5. Add CI pipeline for automated lint/test/compile gates.
+HydroSentinel-AI is technically coherent, auditable, and now better structured for judge evaluation through an explicit scenario matrix that captures both occupancy context and leak conditions.
+
+Release status:
+- Scenario matrix: implemented
+- UI integration: updated
+- Engine compatibility: verified through scenario tests
+- Streamlit presentation: updated
+- Ready for final demonstration and judging

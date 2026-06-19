@@ -33,7 +33,12 @@ Expected telemetry columns:
 - `Avg_Pressure_PSI`
 - `Occupancy_Status`
 
-Bundled sample files are included for normal, event, and leak scenarios.
+Bundled sample files now follow an explicit scenario matrix:
+
+- `normal.csv`: baseline school day (no leak)
+- `normal_leak.csv`: normal school day with leak injection
+- `event.csv`: event day without leak
+- `event_leak.csv`: event day with leak
 
 ## Run Locally
 

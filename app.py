@@ -34,7 +34,7 @@ st.set_page_config(
 
 APP_DIR = CURRENT_DIR
 SAMPLE_FILES = {
-    "normal": [APP_DIR / "normal.csv", APP_DIR / "example_normal_day_2026-10-05.csv"],
+    "normal": [APP_DIR / "normal.csv"],
     "event": [APP_DIR / "event.csv"],
 }
 MODEL_PATH = APP_DIR / "hydrosentinel_isolation_forest.joblib"
@@ -644,26 +644,26 @@ def render_data_documentation() -> None:
     data_files = [
         {
             "name": "normal.csv",
-            "description": "Baseline normal water usage during typical school days",
-            "simulation": "Models regular flow and pressure patterns during Class Hours, After Hours, and Vacation periods",
+            "description": "Scenario A - Baseline normal school day (no leak)",
+            "simulation": "Simulation Data: models a standard school-day flow/pressure profile for baseline learning.",
             "path": APP_DIR / "normal.csv",
         },
         {
-            "name": "example_normal_day_2026-10-05.csv",
-            "description": "Example of a single day's normal operations",
-            "simulation": "Simulates hourly telemetry for a complete school day with realistic occupancy transitions",
-            "path": APP_DIR / "example_normal_day_2026-10-05.csv",
+            "name": "normal_leak.csv",
+            "description": "Scenario B - Normal school day with leak injection",
+            "simulation": "Simulation Data: baseline school-day behavior plus synthetic leak injection for controlled testing.",
+            "path": APP_DIR / "normal_leak.csv",
         },
         {
             "name": "event.csv",
-            "description": "Water usage patterns during planned school events",
-            "simulation": "Simulates elevated flow and pressure readings during assemblies, sports days, and celebrations",
+            "description": "Scenario C - Event day without leak",
+            "simulation": "Simulation Data: elevated but legitimate event-driven water usage to verify false-positive control.",
             "path": APP_DIR / "event.csv",
         },
         {
             "name": "event_leak.csv",
-            "description": "Sample data with anomalies for leak detection validation",
-            "simulation": "Simulates leak scenarios combined with event activity to test model reliability",
+            "description": "Scenario D - Event day with leak",
+            "simulation": "Simulation Data: concurrent event load and leak signature to stress-test model discrimination.",
             "path": APP_DIR / "event_leak.csv",
         },
     ]
