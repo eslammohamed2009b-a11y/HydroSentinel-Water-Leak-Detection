@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import hashlib
 import io
 import sys
@@ -299,6 +300,67 @@ def append_csv_record(path: Path, record: dict, unique_key: str | None = None) -
 
     frame.to_csv(path, index=False)
     return True
+
+
+def get_ui_data(as_json: bool = False, result: dict | None = None):
+    """Return the latest HydroSentinel analysis in an API-ready structure.
+
+    Args:
+        as_json: When True, returns a JSON string. Otherwise returns a dict.
+        result: Optional analysis payload. Defaults to the current session state.
+
+    Returns:
+        A JSON-serializable dict or JSON string containing the latest results.
+    """
+    if result is None:
+        try:
+            data = st.session_state.get("analysis_result") or {}
+        except Exception:
+            data = {}
+    else:
+        data = result
+    insights = data.get("insights", {}) or {}
+    financial = data.get("financial_loss", {}) or {}
+    environmental = data.get("environmental_impact", {}) or {}
+
+    try:
+        session_event_mode = bool(st.session_state.get("event_mode", False))
+        session_source_mode = st.session_state.get("source_mode", "Upload CSV")
+    except Exception:
+        session_event_mode = False
+        session_source_mode = "Upload CSV"
+
+    payload = {
+        "has_leak": bool(data.get("has_leak", False)),
+        "leak_lpm": float(data.get("leak_lpm", 0.0)),
+        "total_liters": float(data.get("total_liters", 0.0)),
+        "leak_type": data.get("leak_type"),
+        "confidence": float(data.get("confidence", 0.0)),
+        "event_mode": bool(data.get("event_mode", session_event_mode)),
+        "event_rows": int(data.get("event_rows", 0)),
+        "analysis_id": data.get("analysis_id"),
+        "source_mode": data.get("source_mode", session_source_mode),
+        "validation_summary": data.get("validation_summary", {}),
+        "reasoning_string": data.get("reasoning_string") or insights.get("reasoning", {}).get("reasoning_string", ""),
+        "environmental_impact": {
+            "carbon_footprint_kgco2e": float(environmental.get("carbon_footprint_kgco2e", 0.0)),
+            "liters_saved": float(insights.get("environmental", {}).get("liters_saved", data.get("total_liters", 0.0))),
+            "energy_saved_kwh": float(insights.get("environmental", {}).get("energy_saved_kwh", 0.0)),
+            "narrative": insights.get("environmental", {}).get("narrative", ""),
+        },
+        "financial_loss": {
+            "current_loss_usd_per_hour": float(financial.get("current_loss_usd_per_hour", 0.0)),
+            "monthly_loss_usd": float(financial.get("monthly_loss_usd", 0.0)),
+            "current_loss_label": insights.get("financial", {}).get("current_loss_label", "$0.00/hour"),
+            "monthly_loss_label": insights.get("financial", {}).get("monthly_loss_label", "$0.00/month"),
+            "narrative": insights.get("financial", {}).get("narrative", ""),
+        },
+        "insights": insights,
+    }
+
+    if as_json:
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    return payload
 
 
 def build_analysis_id(df: pd.DataFrame) -> str:

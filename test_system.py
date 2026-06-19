@@ -10,6 +10,7 @@ import unittest
 import pandas as pd
 
 import ml_engine
+import app
 
 
 class HydroSentinelSystemTests(unittest.TestCase):
@@ -71,6 +72,31 @@ class HydroSentinelSystemTests(unittest.TestCase):
         self.assertIn("reasoning", result["insights"])
         self.assertGreater(result["insights"]["financial"]["monthly_loss_usd"], 0)
         self.assertGreater(result["insights"]["environmental"]["energy_saved_kwh"], 0)
+        self.assertIn("reasoning_string", result)
+        self.assertIsInstance(result["reasoning_string"], str)
+
+    def test_get_ui_data_returns_json_ready_payload(self):
+        """The UI adapter should expose a JSON-ready object for external frontends."""
+        target_df = pd.read_csv(self.project_dir / "event_leak.csv")
+        result = ml_engine.evaluate_telemetry(target_df, self.model_path, event_mode=True)
+        payload = app.get_ui_data(result=result)
+
+        required_keys = {
+            "has_leak",
+            "leak_lpm",
+            "total_liters",
+            "leak_type",
+            "confidence",
+            "environmental_impact",
+            "financial_loss",
+            "reasoning_string",
+        }
+        for key in required_keys:
+            self.assertIn(key, payload)
+
+        json_payload = app.get_ui_data(as_json=True, result=result)
+        self.assertIsInstance(json_payload, str)
+        self.assertIn("reasoning_string", json_payload)
 
 
 if __name__ == "__main__":

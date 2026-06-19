@@ -40,6 +40,50 @@ LABELS_PATH = Path(__file__).resolve().parent / "training_labels.csv"
 LEAK_TYPE_LABELS = ["fixture_leak", "valve_failure", "mainline_break"]
 
 
+def calculate_financial_loss(lpm):
+    """Estimate the hourly financial loss for a given leak rate in L/min."""
+    liters_per_hour = max(float(lpm), 0.0) * 60.0
+    cubic_meters_per_hour = liters_per_hour / 1000.0
+    return round(cubic_meters_per_hour * WATER_COST_PER_M3, 2)
+
+
+def calculate_carbon_footprint(liters):
+    """Estimate the water-related carbon footprint associated with wasted liters."""
+    cubic_meters = max(float(liters), 0.0) / 1000.0
+    treatment_footprint = cubic_meters * 0.19
+    energy_footprint = (cubic_meters * WATER_TREATMENT_ENERGY_KWH_PER_M3) * GRID_EMISSION_KGCO2_PER_KWH
+    return round(treatment_footprint + energy_footprint, 2)
+
+
+def build_reasoning_summary(result, payload):
+    """Create a direct reasoning sentence for external UIs."""
+    if not result.get("has_leak"):
+        return "النظام لم يرصد شذوذاً واضحاً؛ قراءات التدفق والضغط بقيت ضمن خط الأساس المتوقع للفترة الحالية."
+
+    top_row = result.get("top_row")
+    if top_row is None:
+        return "النظام رصد شذوذاً في البيانات، لكن تفاصيل الإشارة غير كافية لصياغة تفسير كامل."
+
+    status = str(top_row.get("Occupancy_Status", "Unknown"))
+    period_label = {
+        "Event": "فترة الفعاليات المدرسية",
+        "Class_Hours": "فترة الحصص الدراسية",
+        "After_Hours": "فترة خارج الدوام",
+        "Vacation": "فترة الإجازة",
+    }.get(status, f"فترة {status}")
+    leak_label = {
+        "fixture_leak": "تسريب في أحد التجهيزات",
+        "valve_failure": "فشل في الصمام",
+        "mainline_break": "كسر في الخط الرئيسي",
+    }.get(str(result.get("leak_type", "")), "تسريب محتمل")
+    anomaly_pct = float(result.get("Leak_Probability", result.get("confidence", 0.0)))
+
+    return (
+        f"النظام رصد شذوذاً بنسبة {anomaly_pct:.0f}% في معدل التدفق خلال {period_label}، "
+        f"مما يشير إلى {leak_label} نتيجة عدم تطابق واضح بين التدفق والضغط مقارنة بخط الأساس."
+    )
+
+
 class InsightEngine:
     """Transform raw leak metrics into decision-friendly stories."""
 
@@ -648,6 +692,14 @@ def evaluate_telemetry(data, model_path, event_mode=False):
 
     if not has_leak:
         metrics["insights"] = InsightEngine.build_insights(metrics, payload)
+        metrics["reasoning_string"] = build_reasoning_summary(metrics, payload)
+        metrics["financial_loss"] = {
+            "current_loss_usd_per_hour": 0.0,
+            "monthly_loss_usd": 0.0,
+        }
+        metrics["environmental_impact"] = {
+            "carbon_footprint_kgco2e": 0.0,
+        }
         return metrics
 
     top_row = anomalies.loc[anomalies["Anomaly_Score"].idxmax()]
@@ -679,5 +731,13 @@ def evaluate_telemetry(data, model_path, event_mode=False):
 
     metrics["metaphor"] = leak_type.replace("_", " ")
     metrics["insights"] = InsightEngine.build_insights(metrics, payload)
+    metrics["reasoning_string"] = build_reasoning_summary(metrics, payload)
+    metrics["financial_loss"] = {
+        "current_loss_usd_per_hour": calculate_financial_loss(leak_lpm),
+        "monthly_loss_usd": round(calculate_financial_loss(leak_lpm) * 24.0 * 30.0, 2),
+    }
+    metrics["environmental_impact"] = {
+        "carbon_footprint_kgco2e": calculate_carbon_footprint(metrics["total_liters"]),
+    }
 
     return metrics
