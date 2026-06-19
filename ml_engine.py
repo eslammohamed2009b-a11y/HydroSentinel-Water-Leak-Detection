@@ -29,12 +29,108 @@ EVENT_OCCUPANCY_STATUS = "Event"
 MAX_FLOW_LPM = 500.0
 MAX_PRESSURE_PSI = 150.0
 WATER_COST_PER_LITER = 0.007
+WATER_COST_PER_M3 = 0.50
 DENSITY_WATER = 1000
 DISCHARGE_COEFF = 0.62
 PSI_TO_PASCAL = 6894.76
 DAILY_DRINKING_LITERS_PER_STUDENT = 2.5
+WATER_TREATMENT_ENERGY_KWH_PER_M3 = 0.45
+GRID_EMISSION_KGCO2_PER_KWH = 0.42
 LABELS_PATH = Path(__file__).resolve().parent / "training_labels.csv"
 LEAK_TYPE_LABELS = ["fixture_leak", "valve_failure", "mainline_break"]
+
+
+class InsightEngine:
+    """Transform raw leak metrics into decision-friendly stories."""
+
+    @staticmethod
+    def build_financial_insight(leak_lpm, current_total_liters):
+        current_m3_per_hour = max(float(leak_lpm), 0.0) * 60.0 / 1000.0
+        current_financial_loss = current_m3_per_hour * WATER_COST_PER_M3
+        monthly_financial_loss = current_financial_loss * 24.0 * 30.0
+        monthly_water_loss_liters = max(float(current_total_liters), 0.0) * 30.0
+
+        return {
+            "current_loss_usd_per_hour": round(current_financial_loss, 2),
+            "monthly_loss_usd": round(monthly_financial_loss, 2),
+            "current_loss_label": f"${current_financial_loss:.2f}/hour",
+            "monthly_loss_label": f"${monthly_financial_loss:,.2f}/month",
+            "narrative": (
+                f"Current financial loss is approximately ${current_financial_loss:.2f} per hour. "
+                f"If ignored for a month, the loss can reach about ${monthly_financial_loss:,.2f}. "
+                f"That also corresponds to roughly {monthly_water_loss_liters:,.0f} liters of avoidable water waste."
+            ),
+        }
+
+    @staticmethod
+    def build_environmental_insight(total_liters):
+        liters_saved = max(float(total_liters), 0.0)
+        m3_saved = liters_saved / 1000.0
+        energy_saved_kwh = m3_saved * WATER_TREATMENT_ENERGY_KWH_PER_M3
+        carbon_saved_kg = energy_saved_kwh * GRID_EMISSION_KGCO2_PER_KWH
+
+        return {
+            "liters_saved": round(liters_saved, 1),
+            "energy_saved_kwh": round(energy_saved_kwh, 2),
+            "carbon_saved_kgco2e": round(carbon_saved_kg, 2),
+            "narrative": (
+                f"Fixing this leak preserves about {liters_saved:,.0f} liters. "
+                f"That avoids roughly {energy_saved_kwh:.2f} kWh of pumping/treatment energy and "
+                f"prevents about {carbon_saved_kg:.2f} kgCO2e of associated emissions."
+            ),
+        }
+
+    @staticmethod
+    def build_reasoning_insight(result, payload):
+        if not result.get("has_leak"):
+            return {
+                "headline": "The system stayed within the learned baseline.",
+                "narrative": "Flow, pressure, and occupancy remained close to the expected school-day pattern, so the model did not flag a leak.",
+                "drivers": [],
+            }
+
+        top_row = result.get("top_row")
+        feature_importance = result.get("feature_importance", [])
+        leak_type = str(result.get("leak_type", "unknown")).replace("_", " ").title()
+        confidence = float(result.get("confidence", 0.0))
+
+        status = str(top_row["Occupancy_Status"]) if top_row is not None and "Occupancy_Status" in top_row else "Unknown"
+        current_flow = float(top_row["Flow_Rate_LPM"]) if top_row is not None else 0.0
+        current_pressure = float(top_row["Avg_Pressure_PSI"]) if top_row is not None else 0.0
+        baseline_flow = float(payload.get("flow_profile", {}).get(status, payload.get("overall_flow", current_flow)))
+        baseline_pressure = float(payload.get("pressure_profile", {}).get(status, payload.get("overall_pressure", current_pressure)))
+        flow_delta_pct = ((current_flow - baseline_flow) / max(baseline_flow, 1e-6)) * 100.0
+        pressure_drop_pct = ((baseline_pressure - current_pressure) / max(baseline_pressure, 1e-6)) * 100.0
+
+        driver_bits = []
+        if feature_importance:
+            driver_bits = [f"{name.replace('numeric__', '').replace('categorical__', '').replace('_', ' ')}" for name, _ in feature_importance[:3]]
+
+        narrative = (
+            f"The model is {confidence:.0f}% confident because current flow reached {current_flow:.1f} L/min, "
+            f"which is {flow_delta_pct:.0f}% above the learned baseline for {status}, while pressure fell to {current_pressure:.1f} PSI "
+            f"({pressure_drop_pct:.0f}% below baseline). {('Top drivers: ' + ', '.join(driver_bits) + '.' if driver_bits else '')}"
+        ).strip()
+
+        return {
+            "headline": f"{leak_type} pattern detected with a flow/pressure mismatch.",
+            "narrative": narrative,
+            "drivers": feature_importance[:3],
+            "flow_delta_pct": round(flow_delta_pct, 1),
+            "pressure_drop_pct": round(pressure_drop_pct, 1),
+            "baseline_flow": round(baseline_flow, 1),
+            "baseline_pressure": round(baseline_pressure, 1),
+            "current_flow": round(current_flow, 1),
+            "current_pressure": round(current_pressure, 1),
+        }
+
+    @classmethod
+    def build_insights(cls, result, payload):
+        return {
+            "financial": cls.build_financial_insight(result.get("leak_lpm", 0.0), result.get("total_liters", 0.0)),
+            "environmental": cls.build_environmental_insight(result.get("total_liters", 0.0)),
+            "reasoning": cls.build_reasoning_insight(result, payload),
+        }
 
 
 def find_sample_file(filename_options):
@@ -551,6 +647,7 @@ def evaluate_telemetry(data, model_path, event_mode=False):
     }
 
     if not has_leak:
+        metrics["insights"] = InsightEngine.build_insights(metrics, payload)
         return metrics
 
     top_row = anomalies.loc[anomalies["Anomaly_Score"].idxmax()]
@@ -581,5 +678,6 @@ def evaluate_telemetry(data, model_path, event_mode=False):
     })
 
     metrics["metaphor"] = leak_type.replace("_", " ")
+    metrics["insights"] = InsightEngine.build_insights(metrics, payload)
 
     return metrics

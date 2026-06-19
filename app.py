@@ -653,16 +653,48 @@ def render_operational(result: dict) -> None:
         st.markdown('</div>', unsafe_allow_html=True)
 
     with main_cols[1]:
+        insights = result.get("insights", {}) or {}
+        financial = insights.get("financial", {}) or {}
+        environmental = insights.get("environmental", {}) or {}
+        reasoning = insights.get("reasoning", {}) or {}
+        feature_drivers = reasoning.get("drivers", []) or []
+        driver_names = [str(item[0]).replace("numeric__", "").replace("categorical__", "").replace("_", " ") for item in feature_drivers]
+
         st.markdown(
             f"""
             <div class="why-box">
-                <div class="title">Why this alert?</div>
-                <div class="headline">{('High confidence leak signature' if has_leak else 'Usage stayed within normal bounds')}</div>
-                <p class="body">{('The model compared current flow and pressure against the learned baseline. Rising flow paired with falling pressure matched a leak pattern.' if has_leak else 'The current readings stayed close to the learned school-day profile, so the system did not flag a leak.')}</p>
+                <div class="title">Explainability Card</div>
+                <div class="headline">{reasoning.get('headline', ('High confidence leak signature' if has_leak else 'Usage stayed within normal bounds'))}</div>
+                <p class="body">{reasoning.get('narrative', ('The model compared current flow and pressure against the learned baseline. Rising flow paired with falling pressure matched a leak pattern.' if has_leak else 'The current readings stayed close to the learned school-day profile, so the system did not flag a leak.'))}</p>
                 <div class="divider"></div>
-                <p class="body" style="margin-bottom:0.35rem;"><b>Event mode:</b> {'Event-aware analysis is active.' if event_mode else 'Off. Turn it on when school events are expected.'}</p>
-                <p class="body" style="margin-bottom:0.35rem;"><b>Event rows:</b> {event_rows}</p>
-                <p class="body"><b>Data validity:</b> {result.get('validation_summary', {}).get('valid_rows', len(target_df))} valid rows used.</p>
+                <div class="exec-card" style="padding:0.85rem; margin-bottom:0.65rem;">
+                    <div class="label">Financial</div>
+                    <div class="value small">{financial.get('current_loss_label', '$0.00/hour')}</div>
+                    <div class="desc">{financial.get('narrative', 'No financial loss detected.')}</div>
+                    <div style="display:flex; gap:0.45rem; flex-wrap:wrap; margin-top:0.55rem;">
+                        <span class="sidebar-chip chip-warning">Monthly: {financial.get('monthly_loss_label', '$0.00/month')}</span>
+                    </div>
+                </div>
+                <div class="exec-card" style="padding:0.85rem; margin-bottom:0.65rem;">
+                    <div class="label">Environmental</div>
+                    <div class="value small">{environmental.get('liters_saved', 0.0):,.1f} L</div>
+                    <div class="desc">{environmental.get('narrative', 'No environmental impact detected.')}</div>
+                    <div style="display:flex; gap:0.45rem; flex-wrap:wrap; margin-top:0.55rem;">
+                        <span class="sidebar-chip chip-success">Energy: {environmental.get('energy_saved_kwh', 0.0):,.2f} kWh</span>
+                        <span class="sidebar-chip chip-muted">Carbon: {environmental.get('carbon_saved_kgco2e', 0.0):,.2f} kgCO2e</span>
+                    </div>
+                </div>
+                <div class="exec-card" style="padding:0.85rem;">
+                    <div class="label">Reasoning</div>
+                    <div class="desc" style="margin-top:0;">{reasoning.get('narrative', '')}</div>
+                    <div style="display:flex; gap:0.45rem; flex-wrap:wrap; margin-top:0.6rem;">
+                        {''.join([f'<span class="sidebar-chip chip-primary">{name}</span>' for name in driver_names]) if driver_names else '<span class="sidebar-chip chip-muted">Baseline comparison</span>'}
+                    </div>
+                    <div class="divider"></div>
+                    <p class="body" style="margin-bottom:0.35rem;"><b>Event mode:</b> {'Event-aware analysis is active.' if event_mode else 'Off. Turn it on when school events are expected.'}</p>
+                    <p class="body" style="margin-bottom:0.35rem;"><b>Event rows:</b> {event_rows}</p>
+                    <p class="body"><b>Data validity:</b> {result.get('validation_summary', {}).get('valid_rows', len(target_df))} valid rows used.</p>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -805,6 +837,7 @@ def render_executive(result: dict) -> None:
         )
 
     with grid[1]:
+        executive_reasoning = ((result.get("insights", {}) or {}).get("reasoning", {}) or {}).get("narrative", "")
         st.markdown(
             f"""
             <div class="exec-card" style="margin-bottom:1rem;">
@@ -819,7 +852,7 @@ def render_executive(result: dict) -> None:
             </div>
             <div class="exec-card gov-box">
                 <div class="title">AI Governance & Logic</div>
-                <div class="body">HydroSentinel compares live telemetry with its learned baseline and uses Event Mode when school activity is expected. Human review remains required before any action.</div>
+                <div class="body">{executive_reasoning or 'HydroSentinel compares live telemetry with its learned baseline and uses Event Mode when school activity is expected. Human review remains required before any action.'}</div>
                 <div class="divider"></div>
                 <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
                     <span class="sidebar-chip chip-primary">Human-in-the-loop</span>

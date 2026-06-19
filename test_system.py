@@ -58,6 +58,7 @@ class HydroSentinelSystemTests(unittest.TestCase):
             "max_leak_probability",
             "event_mode",
             "event_rows",
+            "insights",
         }
         for key in required_keys:
             self.assertIn(key, result)
@@ -65,6 +66,11 @@ class HydroSentinelSystemTests(unittest.TestCase):
         self.assertIsInstance(result["has_leak"], bool)
         self.assertIsInstance(result["df"], pd.DataFrame)
         self.assertGreater(len(result["df"]), 0)
+        self.assertIn("financial", result["insights"])
+        self.assertIn("environmental", result["insights"])
+        self.assertIn("reasoning", result["insights"])
+        self.assertGreater(result["insights"]["financial"]["monthly_loss_usd"], 0)
+        self.assertGreater(result["insights"]["environmental"]["energy_saved_kwh"], 0)
 
 
 if __name__ == "__main__":
