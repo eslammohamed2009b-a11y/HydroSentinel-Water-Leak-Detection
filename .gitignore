@@ -82,6 +82,8 @@ target/
 hydrosentinel_isolation_forest.joblib
 logs.csv
 feedback.csv
+streamlit_monitor.log.jsonl
+*.db
 
 # IPython
 profile_default/
@@ -221,3 +223,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Frontend build artifacts
+node_modules/
+.next/
+frontend/node_modules/
+frontend/.next/

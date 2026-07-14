@@ -1,0 +1,1 @@
+"""Authentication utilities for HydroSentinel backend."""

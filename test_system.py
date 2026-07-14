@@ -1,121 +1,93 @@
-"""Basic system tests for HydroSentinel.
+"""Backend system tests for HydroSentinel."""
 
-These tests validate that the diagnostic model bundle can be built/loaded and
-that evaluate_telemetry returns a stable output contract for sample telemetry.
-"""
+from __future__ import annotations
 
+import os
 from pathlib import Path
 import unittest
 
-import pandas as pd
-
-import ml_engine
-import app
+from fastapi.testclient import TestClient
 
 
-class HydroSentinelSystemTests(unittest.TestCase):
-    """Smoke-level unit tests for core system behavior."""
-
+class HydroSentinelBackendTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.project_dir = Path(__file__).resolve().parent
-        cls.model_path = cls.project_dir / "test_hydrosentinel_isolation_forest.joblib"
+        cls.db_path = cls.project_dir / "test_backend.db"
+        if cls.db_path.exists():
+            cls.db_path.unlink()
 
-        cls.normal_group = [cls.project_dir / "normal.csv"]
-        cls.event_group = [cls.project_dir / "event.csv"]
+        os.environ["DATABASE_URL"] = f"sqlite:///{cls.db_path.as_posix()}"
+        os.environ["BOOTSTRAP_ADMIN_EMAIL"] = "admin@hydrosentinel.app"
+        os.environ["BOOTSTRAP_ADMIN_PASSWORD"] = "ChangeMe123!"
+        os.environ["ALLOWED_ORIGINS"] = "http://localhost:3000"
 
-        cls.training_df = ml_engine.load_training_labels_for_mode(
-            cls.normal_group,
-            cls.event_group,
-            event_mode=True,
-        )
-        ml_engine.ensure_diagnostic_model(cls.training_df, cls.model_path)
+        from backend.main import app
+
+        cls.client = TestClient(app)
 
     @classmethod
     def tearDownClass(cls):
-        if cls.model_path.exists():
-            cls.model_path.unlink()
+        cls.client.close()
+        from backend.database.session import engine
 
-    def test_model_bundle_loads_successfully(self):
-        """Model bundle should load and contain expected objects."""
-        bundle = ml_engine.load_model_bundle(self.model_path)
-        self.assertIn("classifier", bundle)
-        self.assertIn("regressor", bundle)
-        self.assertTrue(bundle.get("diagnostic_mode", False))
+        engine.dispose()
+        if cls.db_path.exists():
+            cls.db_path.unlink()
 
-    def test_evaluate_telemetry_returns_expected_structure(self):
-        """Telemetry evaluation should return expected keys and dataframe."""
-        target_df = pd.read_csv(self.project_dir / "event_leak.csv")
-        result = ml_engine.evaluate_telemetry(target_df, self.model_path, event_mode=True)
+    def test_health_endpoint_returns_ok(self):
+        response = self.client.get("/api/v1/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
 
-        required_keys = {
-            "has_leak",
-            "anomalies",
-            "df",
-            "leak_lpm",
-            "max_leak_probability",
-            "event_mode",
-            "event_rows",
-            "insights",
-        }
-        for key in required_keys:
-            self.assertIn(key, result)
+    def test_auth_login_and_me_flow(self):
+        login_response = self.client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@hydrosentinel.app", "password": "ChangeMe123!"},
+        )
+        self.assertEqual(login_response.status_code, 200)
+        payload = login_response.json()
+        self.assertIn("access_token", payload)
+        self.assertIn("refresh_token", payload)
 
-        self.assertIsInstance(result["has_leak"], bool)
-        self.assertIsInstance(result["df"], pd.DataFrame)
-        self.assertGreater(len(result["df"]), 0)
-        self.assertIn("financial", result["insights"])
-        self.assertIn("environmental", result["insights"])
-        self.assertIn("reasoning", result["insights"])
-        self.assertGreater(result["insights"]["financial"]["monthly_loss_usd"], 0)
-        self.assertGreater(result["insights"]["environmental"]["energy_saved_kwh"], 0)
-        self.assertIn("reasoning_string", result)
-        self.assertIsInstance(result["reasoning_string"], str)
+        me_response = self.client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {payload['access_token']}"},
+        )
+        self.assertEqual(me_response.status_code, 200)
+        self.assertEqual(me_response.json()["email"], "admin@hydrosentinel.app")
 
-    def test_get_ui_data_returns_json_ready_payload(self):
-        """The UI adapter should expose a JSON-ready object for external frontends."""
-        target_df = pd.read_csv(self.project_dir / "event_leak.csv")
-        result = ml_engine.evaluate_telemetry(target_df, self.model_path, event_mode=True)
-        payload = app.get_ui_data(result=result)
+    def test_analysis_endpoints_persist_and_return_feedback(self):
+        analysis_response = self.client.post(
+            "/api/v1/analyses",
+            json={"scenario_selected": "event_leak.csv", "event_mode": True},
+        )
+        self.assertEqual(analysis_response.status_code, 200)
+        analysis_payload = analysis_response.json()
+        self.assertTrue(analysis_payload["has_leak"])
+        self.assertIn("analysis_id", analysis_payload)
 
-        required_keys = {
-            "has_leak",
-            "leak_lpm",
-            "total_liters",
-            "leak_type",
-            "confidence",
-            "environmental_impact",
-            "financial_loss",
-            "reasoning_string",
-        }
-        for key in required_keys:
-            self.assertIn(key, payload)
+        history_response = self.client.get("/api/v1/analyses")
+        self.assertEqual(history_response.status_code, 200)
+        self.assertGreaterEqual(len(history_response.json()), 1)
 
-        json_payload = app.get_ui_data(as_json=True, result=result)
-        self.assertIsInstance(json_payload, str)
-        self.assertIn("reasoning_string", json_payload)
+        detail_response = self.client.get(f"/api/v1/analyses/{analysis_payload['analysis_id']}")
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.json()["analysis_id"], analysis_payload["analysis_id"])
 
-    def test_scenario_matrix_csvs_are_readable_and_evaluable(self):
-        """All four scenario files should be readable and evaluable by the engine."""
-        scenarios = [
-            ("normal.csv", False, False),
-            ("normal_leak.csv", False, True),
-            ("event.csv", True, False),
-            ("event_leak.csv", True, True),
-        ]
+        feedback_response = self.client.post(
+            f"/api/v1/analyses/{analysis_payload['analysis_id']}/feedback",
+            json={"verdict": "confirmed_alert"},
+        )
+        self.assertEqual(feedback_response.status_code, 200)
+        self.assertEqual(feedback_response.json()["feedback"], "confirmed_alert")
 
-        for filename, event_mode, expected_has_leak in scenarios:
-            with self.subTest(scenario=filename):
-                df = pd.read_csv(self.project_dir / filename)
-                cleaned_df, summary = ml_engine.validate_and_clean_data(df, filename)
-                self.assertGreater(summary["valid_rows"], 0)
-                result = ml_engine.evaluate_telemetry(cleaned_df, self.model_path, event_mode=event_mode)
-                self.assertIn("has_leak", result)
-                self.assertIn("insights", result)
-                self.assertIn("reasoning_string", result)
-                self.assertIn("financial", result["insights"])
-                self.assertIn("environmental", result["insights"])
-                self.assertEqual(result["has_leak"], expected_has_leak)
+    def test_scenarios_endpoint_returns_seeded_matrix(self):
+        response = self.client.get("/api/v1/scenarios")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 4)
+        self.assertIn("filename", payload[0])
 
 
 if __name__ == "__main__":

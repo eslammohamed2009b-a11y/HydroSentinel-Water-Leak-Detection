@@ -1,6 +1,1 @@
-streamlit
-pandas
-numpy
-scikit-learn
-plotly
-joblib
+-r backend/requirements.txt
