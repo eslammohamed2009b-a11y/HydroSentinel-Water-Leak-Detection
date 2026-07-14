@@ -229,3 +229,7 @@ node_modules/
 .next/
 frontend/node_modules/
 frontend/.next/
+
+# Keep frontend source library files tracked
+!frontend/lib/
+!frontend/lib/**
