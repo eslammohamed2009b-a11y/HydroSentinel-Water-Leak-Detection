@@ -1,3 +1,9 @@
+databases:
+  - name: hydrosentinel-db
+    plan: starter
+    databaseName: hydrosentinel
+    user: hydrosentinel
+
 services:
   - type: web
     name: hydrosentinel-api
@@ -5,13 +11,19 @@ services:
     plan: starter
     rootDir: .
     buildCommand: pip install -r backend/requirements.txt
-    startCommand: alembic upgrade head ; uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    startCommand: alembic upgrade head && uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/v1/health
     envVars:
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: hydrosentinel-db
+          property: connectionString
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: "false"
       - key: JWT_SECRET_KEY
-        sync: false
+        generateValue: true
       - key: ALLOWED_ORIGINS
         value: https://your-frontend.vercel.app
       - key: BOOTSTRAP_ADMIN_EMAIL

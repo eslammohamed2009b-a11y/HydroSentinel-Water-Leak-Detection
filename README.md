@@ -107,21 +107,55 @@ The current test suite uses a temporary SQLite database for local validation. Pr
 
 ## Deployment
 
-### Frontend on Vercel
+Deploy as two services:
 
-- Root directory: `frontend`
-- Build command: `npm run build`
-- Required env: `NEXT_PUBLIC_API_BASE_URL`
+- Backend API on Render (using `render.yaml` blueprint)
+- Frontend on Vercel (root directory `frontend`)
 
-### Backend on Render
+### 1. Deploy backend (Render)
 
-- Build command: `pip install -r backend/requirements.txt`
-- Start command: `alembic upgrade head ; uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
-- Health check: `/api/v1/health`
+1. Push the repository to GitHub.
+2. In Render, choose **New +** -> **Blueprint**.
+3. Select the repository and keep `render.yaml` at repo root.
+4. Fill required secret values when prompted:
+	- `BOOTSTRAP_ADMIN_EMAIL`
+	- `BOOTSTRAP_ADMIN_PASSWORD`
+5. Click deploy.
 
-### PostgreSQL
+What Render provisions automatically from `render.yaml`:
 
-Use Neon, Supabase, or Render Postgres and set the resulting connection string in `DATABASE_URL`.
+- Managed PostgreSQL database (`hydrosentinel-db`)
+- API web service (`hydrosentinel-api`)
+- Auto-generated `JWT_SECRET_KEY`
+- Runtime `DATABASE_URL` wiring to the managed database
+- Migration run before API startup (`alembic upgrade head`)
+
+After deployment, copy the backend base URL, for example:
+
+- `https://hydrosentinel-api.onrender.com/api/v1`
+
+### 2. Deploy frontend (Vercel)
+
+1. In Vercel, import the same repository.
+2. Set **Root Directory** to `frontend`.
+3. Add environment variable:
+	- `NEXT_PUBLIC_API_BASE_URL=https://<your-render-service>.onrender.com/api/v1`
+4. Deploy.
+
+### 3. Configure backend CORS with final frontend domain
+
+In Render service environment variables, update:
+
+- `ALLOWED_ORIGINS=https://<your-vercel-domain>`
+
+Then redeploy backend.
+
+### 4. Production smoke checks
+
+- Backend health: `GET /api/v1/health`
+- Swagger: `https://<render-domain>/docs`
+- Frontend login/register loads without CORS errors
+- Create one analysis from UI and verify it appears in history
 
 ## Security Notes
 
@@ -133,11 +167,8 @@ Use Neon, Supabase, or Render Postgres and set the resulting connection string i
 
 ## Current Deployment Status
 
-The repository is deployment-prepared but not cloud-deployed from this session because the environment does not include:
-
-- Node.js for local frontend build verification
-- Docker for local container verification
-- Cloud credentials or API tokens for Vercel / Render / Supabase / Neon
+The repository is cloud-deployment ready with blueprint and frontend config files in place.
+Actual cloud rollout still requires your Render and Vercel account access to complete the final clicks and domain wiring.
 
 ## License
 
