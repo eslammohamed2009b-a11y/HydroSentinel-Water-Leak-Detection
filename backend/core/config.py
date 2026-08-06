@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str = "ChangeMe123!"
     bootstrap_admin_name: str = "HydroSentinel Admin"
     allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    cors_origin_regex: str | None = r"https://hydro-sentinel-water-leak-detection-[a-z0-9]+-hydro5\.vercel\.app"
 
     model_config = SettingsConfigDict(
         env_file=".env",
