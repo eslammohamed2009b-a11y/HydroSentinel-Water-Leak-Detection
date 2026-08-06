@@ -54,3 +54,10 @@ export function getCurrentUser(accessToken: string) {
     },
   });
 }
+
+export function logout(refresh_token: string) {
+  return apiFetch<void>("/auth/logout", {
+    method: "POST",
+    body: JSON.stringify({ refresh_token }),
+  });
+}

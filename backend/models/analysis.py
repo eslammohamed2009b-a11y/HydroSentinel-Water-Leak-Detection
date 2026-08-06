@@ -22,6 +22,9 @@ class AnalysisRun(Base):
     __tablename__ = "analysis_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    # Legacy rows may not have an owner until they are explicitly migrated by an
+    # operator. New analysis runs are always created with an owner.
+    owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True, nullable=True)
     analysis_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     scenario_selected: Mapped[str] = mapped_column(String(255))
     event_mode: Mapped[bool] = mapped_column(Boolean, default=False)

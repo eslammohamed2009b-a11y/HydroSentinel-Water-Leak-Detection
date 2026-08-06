@@ -45,7 +45,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    description="Production API for HydroSentinel leak detection, analytics, authentication, and administration.",
+    description="AI-assisted water anomaly and leak-detection decision support for buildings and managed facilities. Results use simulated scenarios and require human review.",
     debug=settings.app_debug,
     version=settings.app_version,
     swagger_ui_parameters={"persistAuthorization": True, "displayRequestDuration": True},

@@ -1,4 +1,8 @@
+"use client";
+
 import Link from "next/link";
+
+import { logout } from "@/services/auth";
 
 type DashboardShellProps = {
   title: string;
@@ -9,6 +13,17 @@ type DashboardShellProps = {
 };
 
 export function DashboardShell({ title, eyebrow, subtitle, children, aside }: DashboardShellProps) {
+  async function handleLogout() {
+    const refreshToken = localStorage.getItem("hydrosentinel_refresh_token");
+    try {
+      if (refreshToken) await logout(refreshToken);
+    } finally {
+      localStorage.removeItem("hydrosentinel_token");
+      localStorage.removeItem("hydrosentinel_refresh_token");
+      window.location.assign("/login");
+    }
+  }
+
   return (
     <main className="min-h-screen px-4 py-5 md:px-8 md:py-8">
       <div className="mx-auto max-w-7xl shell-grid">
@@ -28,11 +43,14 @@ export function DashboardShell({ title, eyebrow, subtitle, children, aside }: Da
             <Link className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3 font-medium" href="/login">
               Authentication
             </Link>
+            <button className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3 text-left font-medium" onClick={() => void handleLogout()} type="button">
+              Sign out
+            </button>
           </nav>
           <div className="mt-6 rounded-[1.6rem] bg-[var(--surface-strong)] p-5">
             <div className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">Migration Status</div>
             <p className="mt-3 text-sm leading-7 text-[var(--muted)]">
-              This Next.js shell now targets the new FastAPI backend for analysis workflows while the legacy Streamlit app remains available during cutover.
+              The current product is Next.js + FastAPI. Streamlit is historical only. Analyses use synthetic scenarios and require human review.
             </p>
           </div>
         </aside>

@@ -42,11 +42,12 @@ export function AnalysisDetail({ analysisId }: { analysisId: string }) {
 
   return (
     <div className="grid gap-5">
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <KpiCard label="Analysis" value={result.analysis_id ?? analysisId} note="Stable public identifier for the run." />
         <KpiCard label="Scenario" value={result.scenario_selected ?? "Unknown"} note="Dataset used for this evaluation." />
         <KpiCard label="Leak Type" value={result.leak_type?.replaceAll("_", " ") ?? "None"} note="Top classifier result." />
-        <KpiCard label="Confidence" value={`${result.confidence.toFixed(1)}%`} note="Current decision confidence." />
+        <KpiCard label="Model Score" value={`${result.confidence.toFixed(1)}%`} note="Synthetic classifier score; not a calibrated probability." />
+        <KpiCard label="Operating Context" value={result.event_mode ? "Event / High Activity" : "Standard"} note="The selected context affects high-activity handling." />
       </div>
       <TelemetryChart points={telemetryPoints} />
       <section className="rounded-[1.6rem] border border-[var(--line)] bg-[var(--surface)] p-5">
@@ -58,6 +59,7 @@ export function AnalysisDetail({ analysisId }: { analysisId: string }) {
         </div>
         {feedbackMessage ? <p className="mt-4 text-sm text-[var(--muted)]">{feedbackMessage}</p> : null}
       </section>
+      <p className="rounded-[1.6rem] border border-[var(--line)] bg-[var(--surface-strong)] p-4 text-sm leading-7 text-[var(--muted)]">This is a simulated-scenario screening result, not field validation or a certified leak-detection decision. Estimated impacts depend on the stated assumptions.</p>
     </div>
   );
 }

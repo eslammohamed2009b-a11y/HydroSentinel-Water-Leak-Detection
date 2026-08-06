@@ -5,6 +5,7 @@ from fastapi import Depends
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from backend.api.deps import get_current_user
 from backend.api.schemas.analysis import AnalysisHistoryItem
 from backend.api.schemas.analysis import AnalysisRequest
 from backend.api.schemas.analysis import AnalysisResponse
@@ -16,18 +17,20 @@ from backend.services.analysis_service import get_analysis_by_public_id
 from backend.services.analysis_service import get_analysis_history
 from backend.services.analysis_service import run_analysis
 from backend.services.analysis_service import serialize_analysis_result
+from backend.models.user import User
 
 
 router = APIRouter(prefix="/analyses", tags=["analyses"])
 
 
 @router.post("", response_model=AnalysisResponse)
-def create_analysis(payload: AnalysisRequest, session: Session = Depends(get_db_session)) -> AnalysisResponse:
+def create_analysis(payload: AnalysisRequest, session: Session = Depends(get_db_session), current_user: User = Depends(get_current_user)) -> AnalysisResponse:
     try:
         result = run_analysis(
             session=session,
             scenario_selected=payload.scenario_selected,
             event_mode=payload.event_mode,
+            owner_user_id=current_user.id,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -40,7 +43,7 @@ def create_analysis(payload: AnalysisRequest, session: Session = Depends(get_db_
 
 
 @router.get("", response_model=list[AnalysisHistoryItem])
-def list_analyses(session: Session = Depends(get_db_session)) -> list[AnalysisHistoryItem]:
+def list_analyses(session: Session = Depends(get_db_session), current_user: User = Depends(get_current_user)) -> list[AnalysisHistoryItem]:
     return [
         AnalysisHistoryItem(
             analysis_id=item.analysis_id,
@@ -52,22 +55,24 @@ def list_analyses(session: Session = Depends(get_db_session)) -> list[AnalysisHi
             total_liters=item.total_liters,
             created_at=item.created_at.isoformat(),
         )
-        for item in get_analysis_history(session)
+        for item in get_analysis_history(session, current_user.id)
     ]
 
 
 @router.get("/{analysis_id}", response_model=AnalysisResponse)
-def get_analysis(analysis_id: str, session: Session = Depends(get_db_session)) -> AnalysisResponse:
-    analysis = get_analysis_by_public_id(session, analysis_id)
+def get_analysis(analysis_id: str, session: Session = Depends(get_db_session), current_user: User = Depends(get_current_user)) -> AnalysisResponse:
+    analysis = get_analysis_by_public_id(session, analysis_id, current_user.id)
     if analysis is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    return AnalysisResponse.model_validate(analysis.payload_json)
+    payload = {**analysis.payload_json}
+    payload.setdefault("limitation_note", "Synthetic/simulated scenario result only; human review is required.")
+    return AnalysisResponse.model_validate(payload)
 
 
 @router.post("/{analysis_id}/feedback", response_model=FeedbackResponse)
-def submit_feedback(analysis_id: str, payload: FeedbackRequest, session: Session = Depends(get_db_session)) -> FeedbackResponse:
+def submit_feedback(analysis_id: str, payload: FeedbackRequest, session: Session = Depends(get_db_session), current_user: User = Depends(get_current_user)) -> FeedbackResponse:
     try:
-        feedback = create_feedback(session, analysis_id, payload.verdict)
+        feedback = create_feedback(session, analysis_id, payload.verdict, current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

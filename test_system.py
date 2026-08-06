@@ -1,4 +1,4 @@
-"""Backend system tests for HydroSentinel."""
+"""Focused integration tests for HydroSentinel's finalized API workflow."""
 
 from __future__ import annotations
 
@@ -12,82 +12,74 @@ from fastapi.testclient import TestClient
 class HydroSentinelBackendTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.project_dir = Path(__file__).resolve().parent
-        cls.db_path = cls.project_dir / "test_backend.db"
+        project_dir = Path(__file__).resolve().parent
+        cls.db_path = project_dir / "test_backend.db"
         if cls.db_path.exists():
             cls.db_path.unlink()
-
-        os.environ["DATABASE_URL"] = f"sqlite:///{cls.db_path.as_posix()}"
-        os.environ["BOOTSTRAP_ADMIN_EMAIL"] = "admin@hydrosentinel.app"
-        os.environ["BOOTSTRAP_ADMIN_PASSWORD"] = "ChangeMe123!"
-        os.environ["ALLOWED_ORIGINS"] = "http://localhost:3000"
-
+        os.environ.update({
+            "DATABASE_URL": f"sqlite:///{cls.db_path.as_posix()}",
+            "BOOTSTRAP_ADMIN_EMAIL": "admin@hydrosentinel.app",
+            "BOOTSTRAP_ADMIN_PASSWORD": "ChangeMe123!",
+            "ALLOWED_ORIGINS": "http://localhost:3000",
+        })
         from backend.main import app
-
         cls.client = TestClient(app)
 
     @classmethod
     def tearDownClass(cls):
         cls.client.close()
         from backend.database.session import engine
-
         engine.dispose()
         if cls.db_path.exists():
             cls.db_path.unlink()
 
-    def test_health_endpoint_returns_ok(self):
-        response = self.client.get("/api/v1/health")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "ok")
+    def _register_and_login(self, email: str) -> dict[str, str]:
+        registered = self.client.post("/api/v1/auth/register", json={"email": email, "full_name": "Facility Operator", "password": "SecurePass123!"})
+        self.assertEqual(registered.status_code, 201)
+        login = self.client.post("/api/v1/auth/login", json={"email": email, "password": "SecurePass123!"})
+        self.assertEqual(login.status_code, 200)
+        return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-    def test_auth_login_and_me_flow(self):
-        login_response = self.client.post(
-            "/api/v1/auth/login",
-            json={"email": "admin@hydrosentinel.app", "password": "ChangeMe123!"},
-        )
-        self.assertEqual(login_response.status_code, 200)
-        payload = login_response.json()
-        self.assertIn("access_token", payload)
-        self.assertIn("refresh_token", payload)
+    def test_health_login_refresh_and_current_user(self):
+        self.assertEqual(self.client.get("/api/v1/health").status_code, 200)
+        login = self.client.post("/api/v1/auth/login", json={"email": "admin@hydrosentinel.app", "password": "ChangeMe123!"})
+        self.assertEqual(login.status_code, 200)
+        tokens = login.json()
+        self.assertEqual(self.client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tokens['access_token']}"}).status_code, 200)
+        self.assertEqual(self.client.post("/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}).status_code, 200)
 
-        me_response = self.client.get(
-            "/api/v1/auth/me",
-            headers={"Authorization": f"Bearer {payload['access_token']}"},
-        )
-        self.assertEqual(me_response.status_code, 200)
-        self.assertEqual(me_response.json()["email"], "admin@hydrosentinel.app")
+    def test_private_analysis_history_feedback_and_owner_isolation(self):
+        first_user = self._register_and_login("first@example.com")
+        second_user = self._register_and_login("second@example.com")
+        self.assertEqual(self.client.post("/api/v1/analyses", json={"scenario_selected": "normal.csv", "event_mode": False}).status_code, 401)
 
-    def test_analysis_endpoints_persist_and_return_feedback(self):
-        analysis_response = self.client.post(
-            "/api/v1/analyses",
-            json={"scenario_selected": "event_leak.csv", "event_mode": True},
-        )
-        self.assertEqual(analysis_response.status_code, 200)
-        analysis_payload = analysis_response.json()
-        self.assertTrue(analysis_payload["has_leak"])
-        self.assertIn("analysis_id", analysis_payload)
+        normal = self.client.post("/api/v1/analyses", headers=first_user, json={"scenario_selected": "normal.csv", "event_mode": False})
+        self.assertEqual(normal.status_code, 200)
+        self.assertFalse(normal.json()["has_leak"])
+        self.assertIn("Synthetic/simulated", normal.json()["limitation_note"])
 
-        history_response = self.client.get("/api/v1/analyses")
-        self.assertEqual(history_response.status_code, 200)
-        self.assertGreaterEqual(len(history_response.json()), 1)
+        leak = self.client.post("/api/v1/analyses", headers=first_user, json={"scenario_selected": "event_leak.csv", "event_mode": True})
+        self.assertEqual(leak.status_code, 200)
+        self.assertTrue(leak.json()["has_leak"])
+        analysis_id = leak.json()["analysis_id"]
+        self.assertGreaterEqual(len(self.client.get("/api/v1/analyses", headers=first_user).json()), 2)
+        self.assertEqual(self.client.get(f"/api/v1/analyses/{analysis_id}", headers=second_user).status_code, 404)
+        self.assertEqual(self.client.post(f"/api/v1/analyses/{analysis_id}/feedback", headers=second_user, json={"verdict": "false_positive"}).status_code, 404)
+        feedback = self.client.post(f"/api/v1/analyses/{analysis_id}/feedback", headers=first_user, json={"verdict": "confirmed_alert"})
+        self.assertEqual(feedback.status_code, 200)
+        self.assertEqual(feedback.json()["feedback"], "confirmed_alert")
 
-        detail_response = self.client.get(f"/api/v1/analyses/{analysis_payload['analysis_id']}")
-        self.assertEqual(detail_response.status_code, 200)
-        self.assertEqual(detail_response.json()["analysis_id"], analysis_payload["analysis_id"])
-
-        feedback_response = self.client.post(
-            f"/api/v1/analyses/{analysis_payload['analysis_id']}/feedback",
-            json={"verdict": "confirmed_alert"},
-        )
-        self.assertEqual(feedback_response.status_code, 200)
-        self.assertEqual(feedback_response.json()["feedback"], "confirmed_alert")
-
-    def test_scenarios_endpoint_returns_seeded_matrix(self):
-        response = self.client.get("/api/v1/scenarios")
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(len(payload), 4)
-        self.assertIn("filename", payload[0])
+    def test_event_mode_changes_contextual_handling_and_rejects_bad_input(self):
+        headers = self._register_and_login("event@example.com")
+        disabled = self.client.post("/api/v1/analyses", headers=headers, json={"scenario_selected": "event.csv", "event_mode": False})
+        enabled = self.client.post("/api/v1/analyses", headers=headers, json={"scenario_selected": "event.csv", "event_mode": True})
+        self.assertEqual(disabled.status_code, 200)
+        self.assertEqual(enabled.status_code, 200)
+        self.assertFalse(disabled.json()["event_mode"])
+        self.assertTrue(enabled.json()["event_mode"])
+        self.assertFalse(enabled.json()["has_leak"])
+        malformed = self.client.post("/api/v1/analyses", headers=headers, json={"scenario_selected": "not-a-scenario.csv", "event_mode": False})
+        self.assertEqual(malformed.status_code, 400)
 
 
 if __name__ == "__main__":

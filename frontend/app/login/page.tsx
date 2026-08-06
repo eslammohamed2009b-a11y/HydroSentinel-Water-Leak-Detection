@@ -17,6 +17,7 @@ export default function LoginPage() {
       try {
         const result = await login({ email, password });
         localStorage.setItem("hydrosentinel_token", result.access_token);
+        if (result.refresh_token) localStorage.setItem("hydrosentinel_refresh_token", result.refresh_token);
         window.location.href = "/dashboard/operational";
       } catch (submissionError) {
         const message = submissionError instanceof Error ? submissionError.message : "Login failed.";
@@ -36,7 +37,7 @@ export default function LoginPage() {
             Water-risk monitoring rebuilt for operators, leadership, and audit trails.
           </h1>
           <p className="mt-5 max-w-xl text-lg leading-8 text-[var(--muted)]">
-            The new platform separates AI scoring, API workflows, authentication, and reporting so school infrastructure teams can move from demo tooling to production operations.
+            The platform combines AI-assisted screening, private analysis workflows, and reporting for buildings and managed facilities.
           </p>
           <div className="mt-10 grid gap-4 md:grid-cols-3">
             <div className="rounded-[1.5rem] bg-[var(--surface-strong)] p-5">
@@ -57,7 +58,7 @@ export default function LoginPage() {
         <section className="rounded-[2rem] border border-[rgba(20,33,24,0.08)] bg-[rgba(255,253,248,0.92)] p-8 shadow-[0_20px_50px_rgba(20,33,24,0.06)] backdrop-blur">
           <h2 className="text-2xl font-semibold tracking-[-0.03em]">Sign in</h2>
           <p className="mt-3 text-sm leading-7 text-[var(--muted)]">
-            Use the backend JWT login endpoint to access analysis history, future feedback tools, and protected admin pages.
+            Sign in to run private analyses, access only your history, and submit feedback. This prototype uses simulated scenarios, not live facility sensors.
           </p>
           <form className="mt-8 space-y-5" onSubmit={handleSubmit}>
             <label className="block">

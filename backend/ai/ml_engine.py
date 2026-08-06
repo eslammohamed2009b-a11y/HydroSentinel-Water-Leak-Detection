@@ -34,7 +34,6 @@ WATER_COST_PER_LITER = WATER_COST_PER_M3 / 1000.0
 DENSITY_WATER = 1000
 DISCHARGE_COEFF = 0.62
 PSI_TO_PASCAL = 6894.76
-DAILY_DRINKING_LITERS_PER_STUDENT = 2.5
 WATER_TREATMENT_ENERGY_KWH_PER_M3 = 0.45
 GRID_EMISSION_KGCO2_PER_KWH = 0.42
 LABELS_PATH = Path(__file__).resolve().parents[2] / "training_labels.csv"
@@ -58,6 +57,18 @@ def calculate_carbon_footprint(liters):
 
 def build_reasoning_summary(result, payload):
     """Create a direct reasoning sentence for external UIs."""
+    # Keep this plain-language summary independent of the legacy localized copy
+    # below, which is retained only to avoid changing historical internals.
+    if not result.get("has_leak"):
+        return "No anomaly pattern was flagged in this simulated facility scenario; flow, pressure, and operating context remained within the learned baseline."
+    top_row = result.get("top_row")
+    if top_row is None:
+        return "A simulated-scenario anomaly was flagged, but there is insufficient detail to form a diagnostic explanation."
+    status = str(top_row.get("Occupancy_Status", "Unknown"))
+    label = str(result.get("leak_type", "potential_leak")).replace("_", " ")
+    score = float(result.get("confidence", 0.0))
+    return f"A {label} pattern was flagged during {status}: flow and pressure differ from the learned synthetic baseline (model score {score:.0f}%). Human review is required."
+
     if not result.get("has_leak"):
         return "النظام لم يرصد شذوذاً واضحاً؛ قراءات التدفق والضغط بقيت ضمن خط الأساس المتوقع للفترة الحالية."
 
@@ -93,7 +104,7 @@ class InsightEngine:
         current_m3_per_hour = max(float(leak_lpm), 0.0) * 60.0 / 1000.0
         current_financial_loss = current_m3_per_hour * WATER_COST_PER_M3
         monthly_financial_loss = current_financial_loss * 24.0 * 30.0
-        monthly_water_loss_liters = max(float(current_total_liters), 0.0) * 30.0
+        monthly_water_loss_liters = max(float(leak_lpm), 0.0) * 60.0 * 24.0 * 30.0
 
         return {
             "current_loss_usd_per_hour": round(current_financial_loss, 2),
@@ -101,9 +112,8 @@ class InsightEngine:
             "current_loss_label": f"${current_financial_loss:.2f}/hour",
             "monthly_loss_label": f"${monthly_financial_loss:,.2f}/month",
             "narrative": (
-                f"Current financial loss is approximately ${current_financial_loss:.2f} per hour. "
-                f"If ignored for a month, the loss can reach about ${monthly_financial_loss:,.2f}. "
-                f"That also corresponds to roughly {monthly_water_loss_liters:,.0f} liters of avoidable water waste."
+                f"Estimate using $0.50/m³ and a constant estimated loss rate: about ${current_financial_loss:.2f} per hour "
+                f"or ${monthly_financial_loss:,.2f} over 30 days ({monthly_water_loss_liters:,.0f} L)."
             ),
         }
 
@@ -123,7 +133,7 @@ class InsightEngine:
             "treatment_carbon_kgco2e": round(treatment_carbon_kg, 2),
             "energy_carbon_kgco2e": round(energy_carbon_kg, 2),
             "narrative": (
-                f"Fixing this leak preserves about {liters_saved:,.0f} liters. "
+                f"Estimated sampled-interval water loss is {liters_saved:,.0f} liters. "
                 f"That avoids roughly {energy_saved_kwh:.2f} kWh of pumping/treatment energy and "
                 f"prevents about {carbon_saved_kg:.2f} kgCO2e of associated emissions "
                 f"({treatment_carbon_kg:.2f} from treatment + {energy_carbon_kg:.2f} from grid energy)."
@@ -135,7 +145,7 @@ class InsightEngine:
         if not result.get("has_leak"):
             return {
                 "headline": "The system stayed within the learned baseline.",
-                "narrative": "Flow, pressure, and occupancy remained close to the expected school-day pattern, so the model did not flag a leak.",
+                "narrative": "Flow, pressure, and building operating context remained close to the learned synthetic baseline, so the model did not flag an anomaly.",
                 "drivers": [],
             }
 
@@ -160,7 +170,7 @@ class InsightEngine:
             ]
 
         narrative = (
-            f"The model is {confidence:.0f}% confident because current flow reached {current_flow:.1f} L/min, "
+            f"The synthetic classifier score is {confidence:.0f}%: current flow reached {current_flow:.1f} L/min, "
             f"which is {flow_delta_pct:.0f}% above the learned baseline for {status}, while pressure fell to {current_pressure:.1f} PSI "
             f"({pressure_drop_pct:.0f}% below baseline). {('Top drivers: ' + ', '.join(driver_bits) + '.' if driver_bits else '')}"
         ).strip()
@@ -558,11 +568,9 @@ def evaluate_telemetry(data, model_path, event_mode=False):
         "anomalies": anomalies,
         "df": scored,
         "leak_lpm": float(scored["Predicted_Loss_LPM"].max()) if has_leak else 0.0,
-        "diameter_mm": 0.0,
         "cost_min": 0.0,
-        "total_liters": float(scored["Predicted_Loss_LPM"].sum()) if has_leak else 0.0,
+        "total_liters": 0.0,
         "metaphor": "No leak detected",
-        "students_count": 0,
         "time_parsed": bool(scored["_time_parsed"].iloc[0]),
         "event_mode": bool(event_mode),
         "event_rows": event_rows,
@@ -596,10 +604,8 @@ def evaluate_telemetry(data, model_path, event_mode=False):
 
     metrics.update({
         "leak_lpm": leak_lpm,
-        "diameter_mm": round(leak_lpm * 0.6, 2),
         "cost_min": round(leak_lpm * WATER_COST_PER_LITER, 2),
-        "total_liters": round(anomalies["Predicted_Loss_LPM"].sum(), 1),
-        "students_count": int(anomalies["Predicted_Loss_LPM"].sum() / DAILY_DRINKING_LITERS_PER_STUDENT),
+        "total_liters": round(_estimate_sampled_loss_liters(scored), 1),
         "top_row": top_row,
         "base_flow": float(top_row["Flow_Rate_LPM"]),
         "base_pressure": float(top_row["Avg_Pressure_PSI"]),
@@ -624,3 +630,13 @@ def evaluate_telemetry(data, model_path, event_mode=False):
     }
 
     return metrics
+
+
+def _estimate_sampled_loss_liters(scored: pd.DataFrame) -> float:
+    """Integrate flagged L/min estimates over timestamp intervals, capped at one hour."""
+    timestamps = pd.to_datetime(scored["Timestamp"], errors="coerce")
+    intervals = timestamps.shift(-1).sub(timestamps).dt.total_seconds().div(60)
+    fallback = intervals.dropna().median() if intervals.notna().any() else 0.0
+    intervals = intervals.fillna(fallback).clip(lower=0.0, upper=60.0)
+    flagged = scored["Leak_Flag"]
+    return float((scored.loc[flagged, "Predicted_Loss_LPM"] * intervals.loc[flagged]).sum())

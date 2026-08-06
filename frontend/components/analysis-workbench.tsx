@@ -92,7 +92,7 @@ export function AnalysisWorkbench({ variant }: AnalysisWorkbenchProps) {
             </select>
           </label>
           <label className="flex items-center justify-between rounded-2xl border border-[var(--line)] bg-[var(--surface-strong)] px-4 py-3 text-sm text-[var(--foreground)]">
-            <span>Event Mode</span>
+            <span>Event / High Activity Mode</span>
             <input checked={eventMode} onChange={(event) => setEventMode(event.target.checked)} type="checkbox" />
           </label>
           <button className="rounded-2xl bg-[var(--primary)] px-4 py-3 font-semibold text-white transition hover:bg-[var(--primary-strong)] disabled:opacity-60" disabled={loading} onClick={handleAnalyze} type="button">
@@ -111,21 +111,22 @@ export function AnalysisWorkbench({ variant }: AnalysisWorkbenchProps) {
   return (
     <DashboardShell aside={aside} eyebrow={headline.eyebrow} subtitle={headline.subtitle} title={headline.title}>
       <div className="grid gap-5">
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <KpiCard label="System Status" note={result?.has_leak ? "Leak signature detected by the migrated backend." : "No leak has been detected in the active analysis."} tone={result?.has_leak ? "danger" : "success"} value={result ? (result.has_leak ? "Leak" : "Stable") : "Idle"} />
-          <KpiCard label="Leak Type" note="Classifier output returned by FastAPI." tone="accent" value={result?.leak_type?.replaceAll("_", " ") ?? "None"} />
-          <KpiCard label="Water Loss" note="Predicted leak loss rate in liters per minute." value={result ? `${result.leak_lpm.toFixed(1)} L/m` : "0.0 L/m"} />
-          <KpiCard label="Confidence" note="Top leak confidence for the active analysis." value={result ? `${result.confidence.toFixed(1)}%` : "0.0%"} />
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <KpiCard label="Screening Result" note={result?.has_leak ? "Synthetic-scenario pattern flagged for human review." : "No leak pattern was flagged in this simulated scenario."} tone={result?.has_leak ? "danger" : "success"} value={result ? (result.has_leak ? "Review" : "No flag") : "Idle"} />
+          <KpiCard label="Pattern Label" note="Synthetic diagnostic classifier output; not field validated." tone="accent" value={result?.leak_type?.replaceAll("_", " ") ?? "None"} />
+          <KpiCard label="Estimated Loss Rate" note="Model-estimated L/min, not a physical measurement." value={result ? `${result.leak_lpm.toFixed(1)} L/m` : "0.0 L/m"} />
+          <KpiCard label="Model Score" note="Synthetic classifier score, not a calibrated probability or confidence interval." value={result ? `${result.confidence.toFixed(1)}%` : "0.0%"} />
+          <KpiCard label="Building Operating Context" note="Context changes how high-activity telemetry is interpreted." value={result?.event_mode ? "Event / High Activity" : "Standard operating context"} />
         </div>
         <TelemetryChart points={telemetryPoints} />
         <div className="grid gap-5 lg:grid-cols-2">
           <section className="rounded-[1.6rem] border border-[var(--line)] bg-[var(--surface)] p-5">
-            <div className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">Financial impact</div>
+            <div className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">Estimated financial impact</div>
             <div className="mt-4 text-3xl font-semibold tracking-[-0.04em]">{String(financial.current_loss_label ?? "$0.00/hour")}</div>
             <p className="mt-3 text-sm leading-7 text-[var(--muted)]">{String(financial.narrative ?? "No active financial impact narrative.")}</p>
           </section>
           <section className="rounded-[1.6rem] border border-[var(--line)] bg-[var(--surface)] p-5">
-            <div className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">Environmental impact</div>
+            <div className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">Estimated water impact</div>
             <div className="mt-4 text-3xl font-semibold tracking-[-0.04em]">{`${Number(environmental.liters_saved ?? 0).toFixed(1)} L`}</div>
             <p className="mt-3 text-sm leading-7 text-[var(--muted)]">{String(environmental.narrative ?? "No environmental narrative available yet.")}</p>
           </section>
@@ -137,6 +138,7 @@ export function AnalysisWorkbench({ variant }: AnalysisWorkbenchProps) {
             <p className="mt-4 max-w-3xl text-sm leading-7 text-white/78">The executive page reuses the same backend result but shifts emphasis toward financial exposure, environmental cost, and governance-safe interpretation rather than raw anomaly detail.</p>
           </section>
         ) : null}
+        <p className="rounded-[1.6rem] border border-[var(--line)] bg-[var(--surface-strong)] p-4 text-sm leading-7 text-[var(--muted)]">Limitation: results use seeded, synthetic/simulated scenarios and are not validated on deployed building or facility infrastructure. Impact values use documented assumptions and require human review.</p>
       </div>
     </DashboardShell>
   );

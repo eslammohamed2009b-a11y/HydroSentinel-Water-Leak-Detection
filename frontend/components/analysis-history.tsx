@@ -31,8 +31,8 @@ export function AnalysisHistory() {
             <div className="rounded-full bg-[var(--surface-strong)] px-4 py-2 text-sm text-[var(--foreground)]">{item.has_leak ? "Leak detected" : "Stable"}</div>
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-4 text-sm text-[var(--muted)]">
-            <span>Confidence: {item.confidence.toFixed(1)}%</span>
-            <span>Loss: {item.leak_lpm.toFixed(1)} L/m</span>
+            <span>Model score: {item.confidence.toFixed(1)}%</span>
+            <span>Estimated loss: {item.leak_lpm.toFixed(1)} L/m</span>
             <span>Total: {item.total_liters.toFixed(1)} L</span>
             <span>{new Date(item.created_at).toLocaleString()}</span>
           </div>

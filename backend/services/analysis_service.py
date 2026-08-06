@@ -23,25 +23,25 @@ from backend.models.scenario import ScenarioRow
 SCENARIO_SEED_METADATA = {
     "normal.csv": {
         "label": "Scenario A - Baseline Normal Day",
-        "description": "Baseline school day without a leak.",
+        "description": "Baseline occupied building scenario without a leak.",
         "occupancy_mode": "normal",
         "expected_has_leak": False,
     },
     "normal_leak.csv": {
         "label": "Scenario B - Normal Day + Leak",
-        "description": "Normal school day with injected leak behavior.",
+        "description": "Occupied building scenario with injected leak behavior.",
         "occupancy_mode": "normal",
         "expected_has_leak": True,
     },
     "event.csv": {
         "label": "Scenario C - Event Day (No Leak)",
-        "description": "Legitimate event-driven demand without a leak.",
+        "description": "Legitimate high-activity demand without a leak.",
         "occupancy_mode": "event",
         "expected_has_leak": False,
     },
     "event_leak.csv": {
         "label": "Scenario D - Event Day + Leak",
-        "description": "Event-driven demand with injected leak behavior.",
+        "description": "High-activity demand with injected leak behavior.",
         "occupancy_mode": "event",
         "expected_has_leak": True,
     },
@@ -141,6 +141,7 @@ def serialize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
         "event_mode": bool(result.get("event_mode", False)),
         "event_rows": int(result.get("event_rows", 0)),
         "source_mode": result.get("source_mode", "PostgreSQL Seeded Scenarios"),
+        "limitation_note": "Synthetic/simulated scenario result only; not validated on physical building or facility infrastructure. Human review is required.",
         "scenario_selected": result.get("scenario_selected"),
         "validation_summary": result.get("validation_summary", {}),
         "reasoning_string": result.get("reasoning_string") or insights.get("reasoning", {}).get("reasoning_string", ""),
@@ -163,9 +164,14 @@ def serialize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _persist_analysis(session: Session, result: dict[str, Any]) -> AnalysisRun:
+def _persist_analysis(session: Session, result: dict[str, Any], owner_user_id: int) -> AnalysisRun:
     payload = serialize_analysis_result(result)
-    existing = session.scalar(select(AnalysisRun).where(AnalysisRun.analysis_id == str(result["analysis_id"])))
+    existing = session.scalar(
+        select(AnalysisRun).where(
+            AnalysisRun.analysis_id == str(result["analysis_id"]),
+            AnalysisRun.owner_user_id == owner_user_id,
+        )
+    )
     if existing is not None:
         existing.payload_json = payload
         existing.confidence = float(result.get("confidence", 0.0))
@@ -187,6 +193,7 @@ def _persist_analysis(session: Session, result: dict[str, Any]) -> AnalysisRun:
         leak_lpm=float(result.get("leak_lpm", 0.0)),
         total_liters=float(result.get("total_liters", 0.0)),
         payload_json=payload,
+        owner_user_id=owner_user_id,
     )
     session.add(analysis_run)
     session.commit()
@@ -209,16 +216,25 @@ def list_scenarios(session: Session) -> list[dict[str, Any]]:
     ]
 
 
-def get_analysis_history(session: Session) -> list[AnalysisRun]:
-    return session.scalars(select(AnalysisRun).order_by(AnalysisRun.created_at.desc())).all()
+def get_analysis_history(session: Session, owner_user_id: int) -> list[AnalysisRun]:
+    return session.scalars(
+        select(AnalysisRun)
+        .where(AnalysisRun.owner_user_id == owner_user_id)
+        .order_by(AnalysisRun.created_at.desc())
+    ).all()
 
 
-def get_analysis_by_public_id(session: Session, analysis_id: str) -> AnalysisRun | None:
-    return session.scalar(select(AnalysisRun).where(AnalysisRun.analysis_id == analysis_id))
+def get_analysis_by_public_id(session: Session, analysis_id: str, owner_user_id: int) -> AnalysisRun | None:
+    return session.scalar(
+        select(AnalysisRun).where(
+            AnalysisRun.analysis_id == analysis_id,
+            AnalysisRun.owner_user_id == owner_user_id,
+        )
+    )
 
 
-def create_feedback(session: Session, analysis_id: str, verdict: str) -> AnalysisFeedback:
-    analysis_run = get_analysis_by_public_id(session, analysis_id)
+def create_feedback(session: Session, analysis_id: str, verdict: str, owner_user_id: int) -> AnalysisFeedback:
+    analysis_run = get_analysis_by_public_id(session, analysis_id, owner_user_id)
     if analysis_run is None:
         raise ValueError(f"Analysis not found: {analysis_id}")
 
@@ -240,12 +256,14 @@ def create_feedback(session: Session, analysis_id: str, verdict: str) -> Analysi
     return feedback
 
 
-def run_analysis(session: Session, scenario_selected: str, event_mode: bool) -> dict[str, Any]:
+def run_analysis(session: Session, scenario_selected: str, event_mode: bool, owner_user_id: int) -> dict[str, Any]:
     training_df, training_summary = load_training_dataframe(session, event_mode)
     target_df, target_summary, scenario = load_target_dataframe(session, scenario_selected)
     _, model_reused = ensure_diagnostic_model(training_df, settings.resolved_model_path)
     result = evaluate_telemetry(target_df, settings.resolved_model_path, event_mode=event_mode)
-    analysis_id = build_analysis_id(target_df)
+    # Scenario content is deterministic, but persisted runs must remain private
+    # to the authenticated user who created them.
+    analysis_id = hashlib.sha256(f"{owner_user_id}:{build_analysis_id(target_df)}".encode("utf-8")).hexdigest()[:16]
     result["analysis_id"] = analysis_id
     result["model_reused"] = model_reused
     result["source_mode"] = "PostgreSQL Seeded Scenarios"
@@ -253,5 +271,5 @@ def run_analysis(session: Session, scenario_selected: str, event_mode: bool) -> 
     result["event_mode"] = event_mode
     result["training_summary"] = training_summary
     result["target_summary"] = target_summary
-    _persist_analysis(session, result)
+    _persist_analysis(session, result, owner_user_id)
     return result

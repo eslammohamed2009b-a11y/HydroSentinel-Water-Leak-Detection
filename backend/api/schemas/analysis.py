@@ -35,6 +35,7 @@ class AnalysisResponse(BaseModel):
     event_mode: bool
     event_rows: int
     source_mode: str
+    limitation_note: str
     scenario_selected: str | None = None
     validation_summary: dict[str, Any]
     reasoning_string: str
