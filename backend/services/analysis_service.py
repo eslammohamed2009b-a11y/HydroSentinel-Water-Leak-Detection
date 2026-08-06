@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from threading import RLock
 from typing import Any
 
 import pandas as pd
@@ -46,6 +47,10 @@ SCENARIO_SEED_METADATA = {
         "expected_has_leak": True,
     },
 }
+
+_training_cache: dict[bool, tuple[str, pd.DataFrame, dict[str, Any]]] = {}
+_diagnostic_model_cache: dict[bool, str] = {}
+_training_cache_lock = RLock()
 
 
 def build_analysis_id(df: pd.DataFrame) -> str:
@@ -93,8 +98,19 @@ def load_training_dataframe(session: Session, event_mode: bool) -> tuple[pd.Data
             continue
         training_frames.append(_scenario_frame_from_rows(scenario.rows))
 
-    training_df = build_synthetic_training_labels_from_frames(training_frames)
-    return training_df, training_df.attrs.get("validation_summary", {})
+    source_fingerprint = hashlib.sha256(
+        "".join(frame.to_csv(index=False) for frame in training_frames).encode("utf-8")
+    ).hexdigest()
+    with _training_cache_lock:
+        cached = _training_cache.get(event_mode)
+        if cached is not None and cached[0] == source_fingerprint:
+            return cached[1], cached[2]
+
+        training_df = build_synthetic_training_labels_from_frames(training_frames)
+        training_df.attrs["source_fingerprint"] = source_fingerprint
+        summary = training_df.attrs.get("validation_summary", {})
+        _training_cache[event_mode] = (source_fingerprint, training_df, summary)
+        return training_df, summary
 
 
 def serialize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -259,7 +275,13 @@ def create_feedback(session: Session, analysis_id: str, verdict: str, owner_user
 def run_analysis(session: Session, scenario_selected: str, event_mode: bool, owner_user_id: int) -> dict[str, Any]:
     training_df, training_summary = load_training_dataframe(session, event_mode)
     target_df, target_summary, scenario = load_target_dataframe(session, scenario_selected)
-    _, model_reused = ensure_diagnostic_model(training_df, settings.resolved_model_path)
+    source_fingerprint = str(training_df.attrs.get("source_fingerprint", ""))
+    with _training_cache_lock:
+        if _diagnostic_model_cache.get(event_mode) == source_fingerprint:
+            model_reused = True
+        else:
+            _, model_reused = ensure_diagnostic_model(training_df, settings.resolved_model_path)
+            _diagnostic_model_cache[event_mode] = source_fingerprint
     result = evaluate_telemetry(target_df, settings.resolved_model_path, event_mode=event_mode)
     # Scenario content is deterministic, but persisted runs must remain private
     # to the authenticated user who created them.

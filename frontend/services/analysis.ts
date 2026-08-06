@@ -52,8 +52,13 @@ export type FeedbackResponse = {
   predicted_leak: boolean;
 };
 
-export function fetchScenarios() {
-  return apiFetch<ScenarioSummary[]>("/scenarios");
+export async function fetchScenarios() {
+  try {
+    return await apiFetch<ScenarioSummary[]>("/scenarios");
+  } catch (error) {
+    await new Promise((resolve) => window.setTimeout(resolve, 800));
+    return apiFetch<ScenarioSummary[]>("/scenarios");
+  }
 }
 
 export function runAnalysis(payload: AnalysisRequest) {

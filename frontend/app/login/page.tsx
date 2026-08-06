@@ -50,7 +50,7 @@ export default function LoginPage() {
             </div>
             <div className="rounded-[1.5rem] bg-[var(--surface-strong)] p-5">
               <div className="text-sm uppercase tracking-[0.18em] text-[var(--muted)]">Frontend</div>
-              <div className="mt-2 text-3xl font-semibold text-[var(--primary)]">Next.js 15</div>
+              <div className="mt-2 text-3xl font-semibold text-[var(--primary)]">Web app</div>
             </div>
           </div>
         </section>
