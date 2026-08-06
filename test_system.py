@@ -69,6 +69,32 @@ class HydroSentinelBackendTests(unittest.TestCase):
         self.assertEqual(feedback.status_code, 200)
         self.assertEqual(feedback.json()["feedback"], "confirmed_alert")
 
+    def test_feedback_route_handles_cors_preflight_and_invalid_tokens(self):
+        preflight = self.client.options(
+            "/api/v1/analyses/sample-analysis-id/feedback",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        self.assertEqual(preflight.status_code, 200)
+        self.assertEqual(preflight.headers["access-control-allow-origin"], "http://localhost:3000")
+        self.assertIn("authorization", preflight.headers["access-control-allow-headers"])
+        self.assertIn("content-type", preflight.headers["access-control-allow-headers"])
+
+        invalid = self.client.post(
+            "/api/v1/analyses/sample-analysis-id/feedback",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Authorization": "Bearer invalid-token",
+            },
+            json={"verdict": "confirmed_alert"},
+        )
+        self.assertEqual(invalid.status_code, 401)
+        self.assertEqual(invalid.json()["detail"], "Invalid token")
+        self.assertEqual(invalid.headers["access-control-allow-origin"], "http://localhost:3000")
+
     def test_event_mode_changes_contextual_handling_and_rejects_bad_input(self):
         headers = self._register_and_login("event@example.com")
         disabled = self.client.post("/api/v1/analyses", headers=headers, json={"scenario_selected": "event.csv", "event_mode": False})
