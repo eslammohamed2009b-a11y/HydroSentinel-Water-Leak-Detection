@@ -18,7 +18,7 @@ export default function LoginPage() {
         const result = await login({ email, password });
         localStorage.setItem("hydrosentinel_token", result.access_token);
         if (result.refresh_token) localStorage.setItem("hydrosentinel_refresh_token", result.refresh_token);
-        window.location.href = "/dashboard/operational";
+        window.location.href = "/demo";
       } catch (submissionError) {
         const message = submissionError instanceof Error ? submissionError.message : "Login failed.";
         setError(message);
