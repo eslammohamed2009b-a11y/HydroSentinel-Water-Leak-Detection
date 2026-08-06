@@ -33,6 +33,10 @@ function evidenceValue(value: unknown, suffix: string) {
   return typeof value === "number" ? `${value > 0 ? "+" : ""}${value.toFixed(1)}${suffix}` : "—";
 }
 
+function pressureDropValue(value: unknown) {
+  return typeof value === "number" ? `${Math.max(value, 0).toFixed(1)}% drop` : "—";
+}
+
 export function DemoWorkbench() {
   const [scenarios, setScenarios] = useState<ScenarioSummary[]>([]);
   const [selectedKey, setSelectedKey] = useState<DemoScenario["key"]>("hidden-leak");
@@ -188,7 +192,7 @@ export function DemoWorkbench() {
                 {result.has_leak && reasoning ? (
                   <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                     <div><div className="text-xs text-[var(--muted)]">Flow change</div><div className="mt-1 text-lg font-semibold">{evidenceValue(reasoning.flow_delta_pct, "%")}</div></div>
-                    <div><div className="text-xs text-[var(--muted)]">Pressure change</div><div className="mt-1 text-lg font-semibold">{evidenceValue(reasoning.pressure_drop_pct, "%")}</div></div>
+                    <div><div className="text-xs text-[var(--muted)]">Pressure drop</div><div className="mt-1 text-lg font-semibold">{pressureDropValue(reasoning.pressure_drop_pct)}</div></div>
                     <div><div className="text-xs text-[var(--muted)]">Current flow</div><div className="mt-1 text-lg font-semibold">{asNumber(reasoning.current_flow).toFixed(1)} L/min</div></div>
                     <div><div className="text-xs text-[var(--muted)]">Current pressure</div><div className="mt-1 text-lg font-semibold">{asNumber(reasoning.current_pressure).toFixed(1)} PSI</div></div>
                   </div>
