@@ -39,7 +39,7 @@ export function AnalysisWorkbench({ variant }: { variant: Variant }) {
   }
 
   const deferred = useDeferredValue(result?.telemetry_points ?? []);
-  const telemetry = useMemo(() => deferred.map((point) => ({ Timestamp: String(point.Timestamp ?? ""), Flow_Rate_LPM: Number(point.Flow_Rate_LPM ?? 0), Leak_Flag: Boolean(point.Leak_Flag) })), [deferred]);
+  const telemetry = useMemo(() => deferred.map((point) => ({ Timestamp: String(point.Timestamp ?? ""), Flow_Rate_LPM: Number(point.Flow_Rate_LPM ?? 0), Avg_Pressure_PSI: Number(point.Avg_Pressure_PSI ?? 0), Leak_Flag: Boolean(point.Leak_Flag) })), [deferred]);
   const financial = result?.financial_loss ?? {}, environmental = result?.environmental_impact ?? {};
   return <DashboardShell title={variant === "executive" ? "Water Risk Summary" : "Water Anomaly Analysis"}>
     <div className="grid gap-6">

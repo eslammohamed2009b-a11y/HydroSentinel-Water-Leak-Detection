@@ -37,6 +37,7 @@ export function AnalysisDetail({ analysisId }: { analysisId: string }) {
   const telemetryPoints = result.telemetry_points.map((point) => ({
     Timestamp: String(point.Timestamp ?? ""),
     Flow_Rate_LPM: Number(point.Flow_Rate_LPM ?? 0),
+    Avg_Pressure_PSI: Number(point.Avg_Pressure_PSI ?? 0),
     Leak_Flag: Boolean(point.Leak_Flag ?? false),
   }));
 

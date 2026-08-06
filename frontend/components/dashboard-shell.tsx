@@ -36,6 +36,7 @@ export function DashboardShell({ title, children }: DashboardShellProps) {
           <Link className="font-semibold tracking-tight text-[var(--primary)]" href="/dashboard/operational">HydroSentinel</Link>
           <nav className="flex items-center gap-1 text-sm text-[var(--muted)]">
             <Link className="rounded-md px-3 py-2 hover:bg-[var(--surface-strong)]" href="/dashboard/operational">Operational</Link>
+            <Link className="rounded-md px-3 py-2 hover:bg-[var(--surface-strong)]" href="/demo">Demo</Link>
             <Link className="rounded-md px-3 py-2 hover:bg-[var(--surface-strong)]" href="/admin/history">History</Link>
             <button className="rounded-md px-3 py-2 hover:bg-[var(--surface-strong)]" onClick={() => void handleLogout()} type="button">Sign out</button>
           </nav>
