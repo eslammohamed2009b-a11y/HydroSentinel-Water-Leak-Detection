@@ -11,6 +11,41 @@ HydroSentinel is an AI-assisted water anomaly and leak-detection decision-suppor
 - Estimates water loss and approximate financial and environmental impact.
 - Returns reasoning, telemetry visualization data, and a scenario-specific interpretation rather than only a binary label.
 
+## Project Story
+
+HydroSentinel began during a 7-day AI hackathon. The team spent roughly five hours researching and narrowing possible problems before committing to water loss in school facilities.
+
+The difficult insight was not simply detecting high flow: legitimate high activity can also look abnormal. High flow by itself is not enough; operating context changes the interpretation.
+
+That observation became the project’s core decision-support idea: account for occupancy and high-activity conditions before treating elevated demand as leak-like behavior.
+
+The first hackathon prototype used synthetic telemetry, Isolation Forest, and Streamlit to explore that idea quickly.
+
+After the competition, the project was rebuilt rather than abandoned:
+
+- Next.js and React frontend
+- FastAPI backend
+- SQLAlchemy and Alembic persistence
+- Current diagnostic path using `RandomForestClassifier` for classification and `LinearRegression` for estimated loss rate
+
+The original hackathon model and the current diagnostic path are not the same system.
+
+## Competition Recognition
+
+**Official Finalist — High School Track.**
+
+The certificate confirms HydroSentinel advanced to the **Final Round**. The feedback report's "did not advance" refers only to the later **Final Judge panel**, not to finalist status.
+
+**Final Round = finalist stage · Final Judge panel = later judging stage**
+
+**Core Judge Score: 60.2 / 70**
+
+- Problem Understanding: 5.0 / 5
+- AI Reasoning: 4.0 / 5
+- Solution Design: 4.0 / 5
+- Impact & Decision: 4.0 / 5
+- Responsible AI: 4.0 / 5
+
 ## Try the Public Demo
 
 The public demo requires no login and runs four seeded, simulated scenarios end to end.
@@ -80,7 +115,7 @@ The Next.js frontend is deployed on Vercel. The FastAPI backend is deployed on R
 
 ## Project Evolution
 
-HydroSentinel began as a rapid school-facility hackathon prototype and was later rebuilt into the current Next.js and FastAPI architecture. The current version focuses on a public, simulated decision-support demo and an engineering-oriented backend foundation.
+The deployed application is the maintained continuation of the hackathon idea; the original Streamlit prototype is historical and is not the current public application.
 
 ## Run Locally
 
@@ -117,7 +152,7 @@ npm run build
 
 ```text
 backend/        FastAPI application, analysis services, models, and persistence
-frontend/       Next.js public demo and private dashboard UI
+frontend/       Next.js public demo and authenticated application views
 alembic/        Database migration environment and revisions
 test_system.py  Backend integration and regression tests
 render.yaml     Render service and PostgreSQL infrastructure configuration
