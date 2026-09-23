@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -47,6 +49,11 @@ class HydroSentinelBackendTests(unittest.TestCase):
         self.assertEqual(login.status_code, 200)
         return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
+    def setUp(self):
+        from backend.services.demo_rate_limiter import demo_rate_limiter
+
+        demo_rate_limiter.reset()
+
     def _artifact_counts(self) -> tuple[int, int]:
         from backend.database.session import SessionLocal
         from backend.models.analysis import AnalysisFeedback
@@ -63,6 +70,7 @@ class HydroSentinelBackendTests(unittest.TestCase):
 
     def test_health_login_refresh_and_current_user(self):
         self.assertEqual(self.client.get("/api/v1/health").status_code, 200)
+        self.assertEqual(self.client.get("/api/v1/ready").status_code, 200)
         login = self.client.post("/api/v1/auth/login", json={"email": "admin@hydrosentinel.app", "password": "ChangeMe123!"})
         self.assertEqual(login.status_code, 200)
         tokens = login.json()
@@ -85,6 +93,67 @@ class HydroSentinelBackendTests(unittest.TestCase):
         self.assertEqual(unknown.status_code, 400)
         self.assertEqual(before, self._artifact_counts())
         self.assertEqual(self.client.get("/api/v1/analyses").status_code, 401)
+
+    def test_public_demo_rate_limit_returns_429_without_affecting_authenticated_routes(self):
+        from backend.core.config import settings
+
+        previous_limit = settings.demo_rate_limit_requests
+        previous_window = settings.demo_rate_limit_window_seconds
+        settings.demo_rate_limit_requests = 2
+        settings.demo_rate_limit_window_seconds = 60
+        try:
+            payload = {"scenario_selected": "normal.csv", "event_mode": False}
+            self.assertEqual(self.client.post("/api/v1/demo/analyses", json=payload).status_code, 200)
+            self.assertEqual(self.client.post("/api/v1/demo/analyses", json=payload).status_code, 200)
+            self.assertEqual(self.client.post("/api/v1/demo/analyses", json=payload).status_code, 429)
+
+            headers = self._register_and_login("rate-limit-auth@example.com")
+            self.assertEqual(
+                self.client.post("/api/v1/analyses", headers=headers, json=payload).status_code,
+                200,
+            )
+        finally:
+            settings.demo_rate_limit_requests = previous_limit
+            settings.demo_rate_limit_window_seconds = previous_window
+
+    def test_readiness_returns_503_for_controlled_incomplete_dependency(self):
+        with patch("backend.api.routers.readiness.database_is_ready", return_value=False):
+            response = self.client.get("/api/v1/ready")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "The service is temporarily unavailable.")
+
+    def test_mixed_mode_analyses_are_consistent_under_concurrency(self):
+        from backend.database.session import SessionLocal
+        from backend.database.session import ensure_database_ready
+        from backend.services.analysis_service import run_demo_analysis
+
+        expected = {
+            ("normal.csv", False): (False, False, 0),
+            ("event_leak.csv", True): (True, True, 12),
+        }
+
+        def execute(case: tuple[str, bool]) -> tuple[tuple[str, bool], tuple[bool, bool, int]]:
+            session = SessionLocal()
+            try:
+                result = run_demo_analysis(session, *case)
+                return case, (
+                    bool(result["event_mode"]),
+                    bool(result["has_leak"]),
+                    int(result["event_rows"]),
+                )
+            finally:
+                session.close()
+
+        ensure_database_ready()
+        cases = [("normal.csv", False), ("event_leak.csv", True)] * 6
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            outcomes = list(executor.map(execute, cases))
+
+        for case, observed in outcomes:
+            expected_event_mode, expected_has_leak, expected_event_rows = expected[case]
+            self.assertEqual(observed[0], expected_event_mode)
+            self.assertEqual(observed[1], expected_has_leak)
+            self.assertEqual(observed[2], expected_event_rows)
 
     def test_private_analysis_history_feedback_and_owner_isolation(self):
         first_user = self._register_and_login("first@example.com")

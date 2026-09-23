@@ -19,6 +19,7 @@ from backend.api.schemas.auth import UserResponse
 from backend.auth.security import create_access_token
 from backend.auth.security import create_refresh_token
 from backend.core.config import settings
+from backend.core.safe_logging import log_exception
 from backend.database.session import get_db_session
 from backend.models.user import User
 from backend.services.auth_service import authenticate_user
@@ -53,7 +54,7 @@ def register(payload: RegisterRequest, session: Session = Depends(get_db_session
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
-        logger.exception("Database failure while registering a user")
+        log_exception(logger, "Database failure while registering a user", exc)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Registration is temporarily unavailable.") from exc
 
     return _build_user_response(user)
@@ -64,7 +65,7 @@ def login(payload: LoginRequest, session: Session = Depends(get_db_session)) -> 
     try:
         user = authenticate_user(session, payload.email, payload.password)
     except SQLAlchemyError as exc:
-        logger.exception("Database failure while authenticating a user")
+        log_exception(logger, "Database failure while authenticating a user", exc)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Authentication is temporarily unavailable.") from exc
 
     if user is None:

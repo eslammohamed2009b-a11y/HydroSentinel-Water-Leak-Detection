@@ -17,11 +17,11 @@ from backend.api.routers.analysis import router as analysis_router
 from backend.api.routers.auth import router as auth_router
 from backend.api.routers.demo import router as demo_router
 from backend.api.routers.health import router as health_router
+from backend.api.routers.readiness import router as readiness_router
 from backend.api.routers.scenarios import router as scenarios_router
 from backend.core.config import settings
-from backend.database.session import SessionLocal
-from backend.services.bootstrap_service import initialize_database
-from backend.services.bootstrap_service import seed_default_data
+from backend.core.safe_logging import log_exception
+from backend.database.session import ensure_database_ready
 
 
 logger = logging.getLogger(__name__)
@@ -41,12 +41,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    initialize_database()
-    session: Session = SessionLocal()
-    try:
-        seed_default_data(session)
-    finally:
-        session.close()
+    ensure_database_ready()
     yield
 
 
@@ -62,13 +57,13 @@ app = FastAPI(
 
 @app.exception_handler(SQLAlchemyError)
 async def database_error_handler(_: Request, exc: SQLAlchemyError) -> JSONResponse:
-    logger.exception("Database request failure")
+    log_exception(logger, "Database request failure", exc)
     return JSONResponse(status_code=503, content={"detail": "The service is temporarily unavailable."})
 
 
 @app.exception_handler(Exception)
 async def unexpected_error_handler(_: Request, exc: Exception) -> JSONResponse:
-    logger.exception("Unhandled API request failure")
+    log_exception(logger, "Unhandled API request failure", exc)
     return JSONResponse(status_code=500, content={"detail": "The request could not be completed."})
 
 app.add_middleware(
@@ -84,6 +79,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver", "*.onrender.com", "*.vercel.app"])
 
 app.include_router(health_router, prefix=settings.api_prefix)
+app.include_router(readiness_router, prefix=settings.api_prefix)
 app.include_router(scenarios_router, prefix=settings.api_prefix)
 app.include_router(analysis_router, prefix=settings.api_prefix)
 app.include_router(auth_router, prefix=settings.api_prefix)

@@ -425,6 +425,13 @@ def load_model_bundle(model_path):
     return joblib.load(path)
 
 
+def _resolve_model_bundle(model_source):
+    """Accept a persisted model path or the bundle produced for this request."""
+    if isinstance(model_source, dict):
+        return model_source
+    return load_model_bundle(model_source)
+
+
 def train_model(df_normal, model_path):
     training_df, validation_summary = validate_and_clean_data(df_normal, "training data")
     training_df = add_time_features(training_df)
@@ -522,9 +529,9 @@ def predict_leak(df_new, model_path):
     return scored_df
 
 
-def predict_diagnostic_labels(df_new, model_path, event_mode=False):
+def predict_diagnostic_labels(df_new, model_source, event_mode=False):
     scored_df, validation_summary = validate_and_clean_data(df_new, "diagnostic inference data")
-    payload = load_model_bundle(model_path)
+    payload = _resolve_model_bundle(model_source)
     scored_df = add_time_features(scored_df)
     feature_frame = build_diagnostic_feature_frame(scored_df)
     predicted_type = payload["classifier"].predict(feature_frame)
@@ -554,9 +561,10 @@ def predict_diagnostic_labels(df_new, model_path, event_mode=False):
     return scored_df
 
 
-def evaluate_telemetry(data, model_path, event_mode=False):
-    payload = load_model_bundle(model_path)
-    scored = predict_diagnostic_labels(data, model_path, event_mode=event_mode)
+def evaluate_telemetry(data, model_source, event_mode=False):
+    """Evaluate telemetry with one resolved bundle, avoiding a second file reload."""
+    payload = _resolve_model_bundle(model_source)
+    scored = predict_diagnostic_labels(data, payload, event_mode=event_mode)
     scored["Confidence"] = scored["Leak_Type_Confidence"]
     scored["Loss_LPM"] = scored["Predicted_Loss_LPM"]
     event_rows = int(scored["Occupancy_Status"].eq(EVENT_OCCUPANCY_STATUS).sum())

@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str | None = None
     bootstrap_admin_name: str = "HydroSentinel Admin"
     allow_public_registration: bool | None = None
+    demo_rate_limit_requests: int = 12
+    demo_rate_limit_window_seconds: int = 60
     allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     cors_origin_regex: str | None = r"https://hydro-sentinel-water-leak-detection(?:-25nt-[a-z0-9]+-hydro5|-xi)\.vercel\.app"
 
@@ -78,6 +80,12 @@ class Settings(BaseSettings):
     @property
     def resolved_model_path(self) -> Path:
         return self.model_path or (self.project_root / "hydrosentinel_isolation_forest.joblib")
+
+    def resolved_diagnostic_model_path(self, event_mode: bool) -> Path:
+        """Keep Standard and Event diagnostic artifacts physically independent."""
+        base = self.resolved_model_path
+        mode = "event" if event_mode else "standard"
+        return base.with_name(f"{base.stem}_{mode}{base.suffix}")
 
     @property
     def cors_origins(self) -> list[str]:
