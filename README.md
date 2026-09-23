@@ -28,6 +28,8 @@ After the competition, the project was rebuilt rather than abandoned:
 - SQLAlchemy and Alembic persistence
 - Current diagnostic path using `RandomForestClassifier` for classification and `LinearRegression` for estimated loss rate
 
+The original competition submission used the name HydroSentinel-AI; the maintained project is HydroSentinel.
+
 The original hackathon model and the current diagnostic path are not the same system.
 
 ## Competition Recognition
@@ -112,10 +114,6 @@ The Next.js frontend is deployed on Vercel. The FastAPI backend is deployed on R
 - Estimated loss rate is a model output, not a physical measurement.
 - Human review is required before any real-world operational action.
 - Impact calculations are estimates based on stated assumptions: `$0.50/m³` water cost, `0.45 kWh/m³` treatment energy, `0.19 kgCO2e/m³` treatment emissions, and `0.42 kgCO2e/kWh` grid emissions.
-
-## Project Evolution
-
-The deployed application is the maintained continuation of the hackathon idea; the original Streamlit prototype is historical and is not the current public application.
 
 ## Run Locally
 

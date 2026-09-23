@@ -122,7 +122,7 @@ export function DemoWorkbench() {
         <section className="border-b border-[var(--line)] pb-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--primary)]">HydroSentinel AI</div>
+              <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--primary)]">HydroSentinel</div>
               <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Context-aware water anomaly detection for managed facilities.</h1>
               {guidedMode ? <p className="mt-2 text-sm text-[var(--muted)]">Choose a synthetic/simulated scenario, set operating context, then review the resulting evidence with a human decision-maker.</p> : null}
             </div>
@@ -180,7 +180,7 @@ export function DemoWorkbench() {
             </button>
             {guidedMode ? <p className="text-sm text-[var(--muted)]">High demand alone is not sufficient evidence of a leak; operating context changes interpretation.</p> : null}
           </div>
-          {guidedMode ? <div className="mt-3"><HelperPanel title="What happens when I click Analyze?">HydroSentinel evaluates the selected flow, pressure, and operating-context telemetry against the learned synthetic baseline, then saves the result to your private history for review.</HelperPanel></div> : null}
+          {guidedMode ? <div className="mt-3"><HelperPanel title="What happens when I click Analyze?">HydroSentinel evaluates the selected flow, pressure, and operating-context telemetry against the learned synthetic baseline, then returns a non-persistent result for human review.</HelperPanel></div> : null}
           {error ? <p className="mt-4 border-l-2 border-[var(--danger)] bg-[rgba(195,63,56,0.08)] px-3 py-2 text-sm text-[var(--danger)]">{error}</p> : null}
         </section>
 

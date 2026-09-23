@@ -27,7 +27,7 @@ services:
       - key: JWT_SECRET_KEY
         generateValue: true
       - key: ALLOWED_ORIGINS
-        value: https://your-frontend.vercel.app
+        value: https://hydro-sentinel-water-leak-detection.vercel.app
       - key: BOOTSTRAP_ADMIN_EMAIL
         sync: false
       - key: BOOTSTRAP_ADMIN_PASSWORD

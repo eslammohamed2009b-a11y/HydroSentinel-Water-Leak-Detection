@@ -1,9 +1,7 @@
-name: Deploy
+name: Manual Provider Deploy
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 jobs:
   prepare:

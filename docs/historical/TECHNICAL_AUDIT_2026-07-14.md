@@ -1,3 +1,6 @@
+> Historical snapshot — July 14, 2026.
+> This document describes an earlier development state and is retained for project history. For the current deployed architecture, demo, limitations, and verification state, see the repository README.
+
 # HydroSentinel Technical Audit Report
 
 Date: 2026-07-14

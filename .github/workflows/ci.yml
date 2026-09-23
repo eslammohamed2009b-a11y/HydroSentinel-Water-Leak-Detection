@@ -10,8 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: sqlite:///./ci_test.db
-      BOOTSTRAP_ADMIN_EMAIL: admin@hydrosentinel.app
-      BOOTSTRAP_ADMIN_PASSWORD: ChangeMe123!
       ALLOWED_ORIGINS: http://localhost:3000
     steps:
       - uses: actions/checkout@v4
