@@ -17,6 +17,9 @@ from backend.services.analysis_service import SCENARIO_SEED_METADATA
 
 
 def initialize_database() -> None:
+    """Initialize disposable local/test schemas; production uses Alembic only."""
+    if settings.app_env.lower() == "production":
+        return
     Base.metadata.create_all(bind=engine)
 
 
@@ -26,11 +29,11 @@ def seed_default_data(session: Session) -> None:
 
 
 def _seed_scenarios(session: Session) -> None:
-    existing = session.scalar(select(Scenario.id).limit(1))
-    if existing is not None:
-        return
+    existing_filenames = set(session.scalars(select(Scenario.file_name)).all())
 
     for filename, metadata in SCENARIO_SEED_METADATA.items():
+        if filename in existing_filenames:
+            continue
         source_path = settings.resolved_data_root / filename
         if not source_path.exists():
             continue
@@ -63,7 +66,11 @@ def _seed_scenarios(session: Session) -> None:
 
 
 def _seed_admin_user(session: Session) -> None:
-    if not settings.bootstrap_admin_email:
+    if not (
+        settings.bootstrap_admin_enabled
+        and settings.bootstrap_admin_email
+        and settings.bootstrap_admin_password
+    ):
         return
 
     existing_user = session.scalar(select(User).where(User.email == settings.bootstrap_admin_email))

@@ -80,6 +80,7 @@ target/
 
 # HydroSentinel runtime artifacts
 hydrosentinel_isolation_forest.joblib
+hydrosentinel_isolation_forest_*.joblib
 logs.csv
 feedback.csv
 streamlit_monitor.log.jsonl

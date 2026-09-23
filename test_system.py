@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from sqlalchemy import func
+from sqlalchemy import select
 
 
 class HydroSentinelBackendTests(unittest.TestCase):
@@ -17,9 +22,13 @@ class HydroSentinelBackendTests(unittest.TestCase):
         if cls.db_path.exists():
             cls.db_path.unlink()
         os.environ.update({
+            "APP_ENV": "test",
             "DATABASE_URL": f"sqlite:///{cls.db_path.as_posix()}",
+            "JWT_SECRET_KEY": "test-only-jwt-secret-that-is-long-enough",
+            "BOOTSTRAP_ADMIN_ENABLED": "true",
             "BOOTSTRAP_ADMIN_EMAIL": "admin@hydrosentinel.app",
             "BOOTSTRAP_ADMIN_PASSWORD": "ChangeMe123!",
+            "ALLOW_PUBLIC_REGISTRATION": "true",
             "ALLOWED_ORIGINS": "http://localhost:3000",
         })
         from backend.main import app
@@ -40,13 +49,191 @@ class HydroSentinelBackendTests(unittest.TestCase):
         self.assertEqual(login.status_code, 200)
         return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
+    def setUp(self):
+        from backend.services.demo_rate_limiter import demo_rate_limiter
+
+        demo_rate_limiter.reset()
+
+    def _artifact_counts(self) -> tuple[int, int]:
+        from backend.database.session import SessionLocal
+        from backend.models.analysis import AnalysisFeedback
+        from backend.models.analysis import AnalysisRun
+
+        session = SessionLocal()
+        try:
+            return (
+                int(session.scalar(select(func.count()).select_from(AnalysisRun)) or 0),
+                int(session.scalar(select(func.count()).select_from(AnalysisFeedback)) or 0),
+            )
+        finally:
+            session.close()
+
     def test_health_login_refresh_and_current_user(self):
         self.assertEqual(self.client.get("/api/v1/health").status_code, 200)
+        self.assertEqual(self.client.get("/api/v1/ready").status_code, 200)
         login = self.client.post("/api/v1/auth/login", json={"email": "admin@hydrosentinel.app", "password": "ChangeMe123!"})
         self.assertEqual(login.status_code, 200)
         tokens = login.json()
         self.assertEqual(self.client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tokens['access_token']}"}).status_code, 200)
         self.assertEqual(self.client.post("/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}).status_code, 200)
+
+    def test_public_demo_analysis_is_non_persistent(self):
+        scenarios = self.client.get("/api/v1/scenarios")
+        self.assertEqual(scenarios.status_code, 200)
+        self.assertEqual(len(scenarios.json()), 4)
+
+        before = self._artifact_counts()
+        response = self.client.post("/api/v1/demo/analyses", json={"scenario_selected": "normal.csv", "event_mode": False})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["analysis_id"])
+        self.assertIn("Synthetic/simulated", response.json()["limitation_note"])
+        self.assertEqual(before, self._artifact_counts())
+
+        unknown = self.client.post("/api/v1/demo/analyses", json={"scenario_selected": "not-a-scenario.csv", "event_mode": False})
+        self.assertEqual(unknown.status_code, 400)
+        self.assertEqual(before, self._artifact_counts())
+        self.assertEqual(self.client.get("/api/v1/analyses").status_code, 401)
+
+    def test_public_demo_rate_limit_returns_429_without_affecting_authenticated_routes(self):
+        from backend.core.config import settings
+
+        previous_limit = settings.demo_rate_limit_requests
+        previous_window = settings.demo_rate_limit_window_seconds
+        settings.demo_rate_limit_requests = 2
+        settings.demo_rate_limit_window_seconds = 60
+        try:
+            payload = {"scenario_selected": "normal.csv", "event_mode": False}
+            self.assertEqual(self.client.post("/api/v1/demo/analyses", json=payload).status_code, 200)
+            self.assertEqual(self.client.post("/api/v1/demo/analyses", json=payload).status_code, 200)
+            self.assertEqual(self.client.post("/api/v1/demo/analyses", json=payload).status_code, 429)
+
+            headers = self._register_and_login("rate-limit-auth@example.com")
+            self.assertEqual(
+                self.client.post("/api/v1/analyses", headers=headers, json=payload).status_code,
+                200,
+            )
+        finally:
+            settings.demo_rate_limit_requests = previous_limit
+            settings.demo_rate_limit_window_seconds = previous_window
+
+    def test_forwarded_headers_are_ignored_when_proxy_trust_is_disabled(self):
+        from backend.core.config import settings
+
+        previous_limit = settings.demo_rate_limit_requests
+        previous_trust = settings.trust_proxy_headers
+        settings.demo_rate_limit_requests = 1
+        settings.trust_proxy_headers = False
+        try:
+            payload = {"scenario_selected": "normal.csv", "event_mode": False}
+            first = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "198.51.100.10"},
+                json=payload,
+            )
+            second = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "203.0.113.20"},
+                json=payload,
+            )
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(second.status_code, 429)
+        finally:
+            settings.demo_rate_limit_requests = previous_limit
+            settings.trust_proxy_headers = previous_trust
+
+    def test_trusted_forwarded_client_ips_have_independent_demo_limit_buckets(self):
+        from backend.core.config import settings
+
+        previous_limit = settings.demo_rate_limit_requests
+        previous_trust = settings.trust_proxy_headers
+        settings.demo_rate_limit_requests = 1
+        settings.trust_proxy_headers = True
+        try:
+            payload = {"scenario_selected": "normal.csv", "event_mode": False}
+            first = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "malformed, 198.51.100.10, 203.0.113.20"},
+                json=payload,
+            )
+            second = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "203.0.113.20"},
+                json=payload,
+            )
+            repeat_first = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "198.51.100.10"},
+                json=payload,
+            )
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(second.status_code, 200)
+            self.assertEqual(repeat_first.status_code, 429)
+        finally:
+            settings.demo_rate_limit_requests = previous_limit
+            settings.trust_proxy_headers = previous_trust
+
+    def test_malformed_or_missing_trusted_forwarded_headers_fall_back_to_socket_host(self):
+        from backend.core.config import settings
+        from backend.services.demo_rate_limiter import select_demo_client_host
+
+        previous_limit = settings.demo_rate_limit_requests
+        previous_trust = settings.trust_proxy_headers
+        settings.demo_rate_limit_requests = 1
+        settings.trust_proxy_headers = True
+        try:
+            self.assertEqual(select_demo_client_host("testserver", "unknown, broken", True), "testserver")
+            self.assertEqual(select_demo_client_host("testserver", None, True), "testserver")
+            payload = {"scenario_selected": "normal.csv", "event_mode": False}
+            malformed = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "unknown, broken"},
+                json=payload,
+            )
+            missing = self.client.post("/api/v1/demo/analyses", json=payload)
+            self.assertEqual(malformed.status_code, 200)
+            self.assertEqual(missing.status_code, 429)
+        finally:
+            settings.demo_rate_limit_requests = previous_limit
+            settings.trust_proxy_headers = previous_trust
+
+    def test_readiness_returns_503_for_controlled_incomplete_dependency(self):
+        with patch("backend.api.routers.readiness.database_is_ready", return_value=False):
+            response = self.client.get("/api/v1/ready")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "The service is temporarily unavailable.")
+
+    def test_mixed_mode_analyses_are_consistent_under_concurrency(self):
+        from backend.database.session import SessionLocal
+        from backend.database.session import ensure_database_ready
+        from backend.services.analysis_service import run_demo_analysis
+
+        expected = {
+            ("normal.csv", False): (False, False, 0),
+            ("event_leak.csv", True): (True, True, 12),
+        }
+
+        def execute(case: tuple[str, bool]) -> tuple[tuple[str, bool], tuple[bool, bool, int]]:
+            session = SessionLocal()
+            try:
+                result = run_demo_analysis(session, *case)
+                return case, (
+                    bool(result["event_mode"]),
+                    bool(result["has_leak"]),
+                    int(result["event_rows"]),
+                )
+            finally:
+                session.close()
+
+        ensure_database_ready()
+        cases = [("normal.csv", False), ("event_leak.csv", True)] * 6
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            outcomes = list(executor.map(execute, cases))
+
+        for case, observed in outcomes:
+            expected_event_mode, expected_has_leak, expected_event_rows = expected[case]
+            self.assertEqual(observed[0], expected_event_mode)
+            self.assertEqual(observed[1], expected_has_leak)
+            self.assertEqual(observed[2], expected_event_rows)
 
     def test_private_analysis_history_feedback_and_owner_isolation(self):
         first_user = self._register_and_login("first@example.com")
@@ -68,6 +255,56 @@ class HydroSentinelBackendTests(unittest.TestCase):
         feedback = self.client.post(f"/api/v1/analyses/{analysis_id}/feedback", headers=first_user, json={"verdict": "confirmed_alert"})
         self.assertEqual(feedback.status_code, 200)
         self.assertEqual(feedback.json()["feedback"], "confirmed_alert")
+
+    def test_same_authenticated_scenario_creates_distinct_history_records(self):
+        headers = self._register_and_login("repeat@example.com")
+        first = self.client.post("/api/v1/analyses", headers=headers, json={"scenario_selected": "normal.csv", "event_mode": False})
+        second = self.client.post("/api/v1/analyses", headers=headers, json={"scenario_selected": "normal.csv", "event_mode": False})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertNotEqual(first.json()["analysis_id"], second.json()["analysis_id"])
+
+        history = self.client.get("/api/v1/analyses", headers=headers)
+        self.assertEqual(history.status_code, 200)
+        history_ids = {item["analysis_id"] for item in history.json()}
+        self.assertIn(first.json()["analysis_id"], history_ids)
+        self.assertIn(second.json()["analysis_id"], history_ids)
+
+    def test_public_registration_can_be_disabled_without_creating_a_user(self):
+        from backend.core.config import settings
+        from backend.database.session import SessionLocal
+        from backend.models.user import User
+
+        previous_value = settings.allow_public_registration
+        settings.allow_public_registration = False
+        try:
+            response = self.client.post(
+                "/api/v1/auth/register",
+                json={"email": "disabled@example.com", "full_name": "Disabled User", "password": "SecurePass123!"},
+            )
+            self.assertEqual(response.status_code, 403)
+            session = SessionLocal()
+            try:
+                self.assertIsNone(session.scalar(select(User).where(User.email == "disabled@example.com")))
+            finally:
+                session.close()
+        finally:
+            settings.allow_public_registration = previous_value
+
+    def test_production_rejects_unsafe_security_configuration(self):
+        from backend.core.config import Settings
+
+        with self.assertRaises(ValidationError):
+            Settings(app_env="production", jwt_secret_key="change-me", bootstrap_admin_enabled=False)
+
+        with self.assertRaises(ValidationError):
+            Settings(
+                app_env="production",
+                jwt_secret_key="a-strong-production-jwt-secret-with-32-characters",
+                bootstrap_admin_enabled=True,
+                bootstrap_admin_email="admin@hydrosentinel.app",
+                bootstrap_admin_password="ChangeMe123!",
+            )
 
     def test_feedback_route_handles_cors_preflight_and_invalid_tokens(self):
         preflight = self.client.options(
@@ -94,6 +331,19 @@ class HydroSentinelBackendTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 401)
         self.assertEqual(invalid.json()["detail"], "Invalid token")
         self.assertEqual(invalid.headers["access-control-allow-origin"], "http://localhost:3000")
+
+    def test_selected_vercel_project_deployment_origin_is_allowed_by_cors(self):
+        deployment_origin = "https://hydro-sentinel-water-leak-detection-q4vuokvzq-hydro5.vercel.app"
+        preflight = self.client.options(
+            "/api/v1/demo/analyses",
+            headers={
+                "Origin": deployment_origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        self.assertEqual(preflight.status_code, 200)
+        self.assertEqual(preflight.headers["access-control-allow-origin"], deployment_origin)
 
     def test_event_mode_changes_contextual_handling_and_rejects_bad_input(self):
         headers = self._register_and_login("event@example.com")

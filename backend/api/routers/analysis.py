@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+import logging
 
 from backend.api.deps import get_current_user
 from backend.api.schemas.analysis import AnalysisHistoryItem
@@ -11,6 +12,7 @@ from backend.api.schemas.analysis import AnalysisRequest
 from backend.api.schemas.analysis import AnalysisResponse
 from backend.api.schemas.analysis import FeedbackRequest
 from backend.api.schemas.analysis import FeedbackResponse
+from backend.core.safe_logging import log_exception
 from backend.database.session import get_db_session
 from backend.services.analysis_service import create_feedback
 from backend.services.analysis_service import get_analysis_by_public_id
@@ -21,6 +23,7 @@ from backend.models.user import User
 
 
 router = APIRouter(prefix="/analyses", tags=["analyses"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("", response_model=AnalysisResponse)
@@ -37,7 +40,8 @@ def create_analysis(payload: AnalysisRequest, session: Session = Depends(get_db_
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+        log_exception(logger, "Authenticated analysis execution failed", exc)
+        raise HTTPException(status_code=500, detail="Analysis could not be completed.") from exc
 
     return AnalysisResponse.model_validate(serialize_analysis_result(result))
 

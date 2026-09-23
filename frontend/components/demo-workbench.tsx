@@ -2,9 +2,9 @@
 
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
-import { DashboardShell } from "@/components/dashboard-shell";
+import { DemoShell } from "@/components/demo-shell";
 import { TelemetryChart, type TelemetryPoint } from "@/components/telemetry-chart";
-import { fetchScenarios, runAnalysis, type AnalysisResponse, type ScenarioSummary } from "@/services/analysis";
+import { fetchScenarios, runDemoAnalysis, type AnalysisResponse, type ScenarioSummary } from "@/services/analysis";
 
 type DemoScenario = {
   key: "normal" | "hidden-leak" | "high-activity" | "high-activity-leak";
@@ -97,7 +97,7 @@ export function DemoWorkbench() {
     setLoading(true);
     setError(null);
     try {
-      setResult(await runAnalysis({ scenario_selected: selectedScenario.filename, event_mode: eventMode }));
+      setResult(await runDemoAnalysis({ scenario_selected: selectedScenario.filename, event_mode: eventMode }));
     } catch {
       setError("Analysis could not be completed. Please retry in a moment.");
     } finally {
@@ -117,7 +117,7 @@ export function DemoWorkbench() {
   const environmental = result?.environmental_impact ?? {};
 
   return (
-    <DashboardShell title="Analyze">
+    <DemoShell title="Analyze">
       <div className="grid gap-6">
         <section className="border-b border-[var(--line)] pb-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -260,6 +260,6 @@ export function DemoWorkbench() {
           {guidedMode ? <div className="mt-3"><HelperPanel title="What can and can’t the system conclude?">It can surface patterns that differ from its learned synthetic baseline and provide decision-support estimates. It cannot confirm a physical leak, replace site inspection, or guarantee outcomes.</HelperPanel></div> : null}
         </section>
       </div>
-    </DashboardShell>
+    </DemoShell>
   );
 }

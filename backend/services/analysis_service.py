@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
+from copy import deepcopy
 from threading import RLock
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 from sqlalchemy import select
@@ -49,14 +52,12 @@ SCENARIO_SEED_METADATA = {
 }
 
 _training_cache: dict[bool, tuple[str, pd.DataFrame, dict[str, Any]]] = {}
-_diagnostic_model_cache: dict[bool, str] = {}
+_diagnostic_model_cache: dict[bool, tuple[str, dict[str, Any]]] = {}
 _training_cache_lock = RLock()
-
-
-def build_analysis_id(df: pd.DataFrame) -> str:
-    canonical = df[["Timestamp", "Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Status"]].copy()
-    canonical["Timestamp"] = canonical["Timestamp"].astype(str)
-    return hashlib.sha256(canonical.to_csv(index=False).encode("utf-8")).hexdigest()[:16]
+_diagnostic_model_locks = {False: RLock(), True: RLock()}
+_demo_result_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+_demo_result_cache_lock = RLock()
+_MAX_DEMO_RESULT_CACHE_ENTRIES = 16
 
 
 def _scenario_frame_from_rows(rows: list[ScenarioRow]) -> pd.DataFrame:
@@ -111,6 +112,32 @@ def load_training_dataframe(session: Session, event_mode: bool) -> tuple[pd.Data
         summary = training_df.attrs.get("validation_summary", {})
         _training_cache[event_mode] = (source_fingerprint, training_df, summary)
         return training_df, summary
+
+
+def _frame_fingerprint(frame: pd.DataFrame) -> str:
+    return hashlib.sha256(frame.to_csv(index=False).encode("utf-8")).hexdigest()
+
+
+def _get_diagnostic_model_bundle(training_df: pd.DataFrame, event_mode: bool) -> tuple[dict[str, Any], bool]:
+    """Return the mode-specific bundle used for this request's inference.
+
+    The per-mode locks prevent same-mode file writes from racing.  Standard and
+    Event modes use separate artifacts and evaluation receives this returned
+    bundle directly, so it cannot reload the other mode's model after a lock is
+    released.
+    """
+    source_fingerprint = str(training_df.attrs.get("source_fingerprint", ""))
+    with _diagnostic_model_locks[event_mode]:
+        cached = _diagnostic_model_cache.get(event_mode)
+        if cached is not None and cached[0] == source_fingerprint:
+            return cached[1], True
+
+        bundle, model_reused = ensure_diagnostic_model(
+            training_df,
+            settings.resolved_diagnostic_model_path(event_mode),
+        )
+        _diagnostic_model_cache[event_mode] = (source_fingerprint, bundle)
+        return bundle, model_reused
 
 
 def serialize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -182,24 +209,6 @@ def serialize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
 
 def _persist_analysis(session: Session, result: dict[str, Any], owner_user_id: int) -> AnalysisRun:
     payload = serialize_analysis_result(result)
-    existing = session.scalar(
-        select(AnalysisRun).where(
-            AnalysisRun.analysis_id == str(result["analysis_id"]),
-            AnalysisRun.owner_user_id == owner_user_id,
-        )
-    )
-    if existing is not None:
-        existing.payload_json = payload
-        existing.confidence = float(result.get("confidence", 0.0))
-        existing.leak_lpm = float(result.get("leak_lpm", 0.0))
-        existing.total_liters = float(result.get("total_liters", 0.0))
-        existing.has_leak = bool(result.get("has_leak", False))
-        existing.event_mode = bool(result.get("event_mode", False))
-        existing.scenario_selected = str(result.get("scenario_selected", existing.scenario_selected))
-        session.commit()
-        session.refresh(existing)
-        return existing
-
     analysis_run = AnalysisRun(
         analysis_id=str(result["analysis_id"]),
         scenario_selected=str(result["scenario_selected"]),
@@ -272,26 +281,78 @@ def create_feedback(session: Session, analysis_id: str, verdict: str, owner_user
     return feedback
 
 
-def run_analysis(session: Session, scenario_selected: str, event_mode: bool, owner_user_id: int) -> dict[str, Any]:
-    training_df, training_summary = load_training_dataframe(session, event_mode)
-    target_df, target_summary, scenario = load_target_dataframe(session, scenario_selected)
-    source_fingerprint = str(training_df.attrs.get("source_fingerprint", ""))
-    with _training_cache_lock:
-        if _diagnostic_model_cache.get(event_mode) == source_fingerprint:
-            model_reused = True
-        else:
-            _, model_reused = ensure_diagnostic_model(training_df, settings.resolved_model_path)
-            _diagnostic_model_cache[event_mode] = source_fingerprint
-    result = evaluate_telemetry(target_df, settings.resolved_model_path, event_mode=event_mode)
-    # Scenario content is deterministic, but persisted runs must remain private
-    # to the authenticated user who created them.
-    analysis_id = hashlib.sha256(f"{owner_user_id}:{build_analysis_id(target_df)}".encode("utf-8")).hexdigest()[:16]
-    result["analysis_id"] = analysis_id
+def _compute_analysis_from_frames(
+    training_df: pd.DataFrame,
+    training_summary: dict[str, Any],
+    target_df: pd.DataFrame,
+    target_summary: dict[str, Any],
+    scenario: Scenario,
+    event_mode: bool,
+) -> dict[str, Any]:
+    model_bundle, model_reused = _get_diagnostic_model_bundle(training_df, event_mode)
+    result = evaluate_telemetry(target_df, model_bundle, event_mode=event_mode)
     result["model_reused"] = model_reused
     result["source_mode"] = "PostgreSQL Seeded Scenarios"
     result["scenario_selected"] = scenario.file_name
     result["event_mode"] = event_mode
     result["training_summary"] = training_summary
     result["target_summary"] = target_summary
+    return result
+
+
+def compute_analysis(session: Session, scenario_selected: str, event_mode: bool) -> dict[str, Any]:
+    training_df, training_summary = load_training_dataframe(session, event_mode)
+    target_df, target_summary, scenario = load_target_dataframe(session, scenario_selected)
+    return _compute_analysis_from_frames(
+        training_df,
+        training_summary,
+        target_df,
+        target_summary,
+        scenario,
+        event_mode,
+    )
+
+
+def run_demo_analysis(session: Session, scenario_selected: str, event_mode: bool) -> dict[str, Any]:
+    """Evaluate a seeded scenario without persistent data or stale cache entries."""
+    training_df, training_summary = load_training_dataframe(session, event_mode)
+    target_df, target_summary, scenario = load_target_dataframe(session, scenario_selected)
+    cache_material = "|".join(
+        [
+            "demo-analysis-v1",
+            str(event_mode),
+            str(training_df.attrs.get("source_fingerprint", "")),
+            _frame_fingerprint(target_df),
+        ]
+    )
+    cache_key = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
+
+    # This process-local, bounded cache is keyed by both training and scenario
+    # inputs. Changes to seeded rows invalidate the relevant entry automatically.
+    with _demo_result_cache_lock:
+        cached = _demo_result_cache.get(cache_key)
+        if cached is not None:
+            _demo_result_cache.move_to_end(cache_key)
+            return deepcopy(cached)
+
+        result = _compute_analysis_from_frames(
+            training_df,
+            training_summary,
+            target_df,
+            target_summary,
+            scenario,
+            event_mode,
+        )
+        _demo_result_cache[cache_key] = deepcopy(result)
+        _demo_result_cache.move_to_end(cache_key)
+        while len(_demo_result_cache) > _MAX_DEMO_RESULT_CACHE_ENTRIES:
+            _demo_result_cache.popitem(last=False)
+        return result
+
+
+def run_analysis(session: Session, scenario_selected: str, event_mode: bool, owner_user_id: int) -> dict[str, Any]:
+    result = compute_analysis(session, scenario_selected, event_mode)
+    # Every authenticated execution is a distinct, owner-scoped history record.
+    result["analysis_id"] = uuid4().hex
     _persist_analysis(session, result, owner_user_id)
     return result

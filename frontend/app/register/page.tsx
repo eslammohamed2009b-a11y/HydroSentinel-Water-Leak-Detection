@@ -5,9 +5,9 @@ import { FormEvent, useState, useTransition } from "react";
 import { register } from "@/services/auth";
 
 export default function RegisterPage() {
-  const [email, setEmail] = useState("operator@hydrosentinel.app");
-  const [fullName, setFullName] = useState("Facility Operator");
-  const [password, setPassword] = useState("ChangeMe123!");
+  const [email, setEmail] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [password, setPassword] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
