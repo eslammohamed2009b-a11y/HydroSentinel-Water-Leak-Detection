@@ -12,7 +12,7 @@ export function DashboardShell({ title, children }: DashboardShellProps) {
 
   useEffect(() => {
     if (!localStorage.getItem("hydrosentinel_token")) {
-      window.location.assign("/login");
+      window.location.assign("/demo");
       return;
     }
     setAuthorized(true);
@@ -23,7 +23,7 @@ export function DashboardShell({ title, children }: DashboardShellProps) {
     try { if (refreshToken) await logout(refreshToken); } finally {
       localStorage.removeItem("hydrosentinel_token");
       localStorage.removeItem("hydrosentinel_refresh_token");
-      window.location.assign("/login");
+      window.location.assign("/demo");
     }
   }
 

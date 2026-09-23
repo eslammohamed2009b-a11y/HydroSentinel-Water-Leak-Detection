@@ -1,11 +1,11 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 const REQUEST_TIMEOUT_MS = 25_000;
 
-function redirectToLogin() {
+function redirectToDemo() {
   if (typeof window === "undefined") return;
   localStorage.removeItem("hydrosentinel_token");
   localStorage.removeItem("hydrosentinel_refresh_token");
-  if (window.location.pathname !== "/login") window.location.assign("/login");
+  if (window.location.pathname !== "/demo") window.location.assign("/demo");
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -32,7 +32,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   }
 
   if (!response.ok) {
-    if (response.status === 401) redirectToLogin();
+    if (response.status === 401) redirectToDemo();
     const payload = await response.text();
     throw new Error(payload || `Request failed with status ${response.status}`);
   }

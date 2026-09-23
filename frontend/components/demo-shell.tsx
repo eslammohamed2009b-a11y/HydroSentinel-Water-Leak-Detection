@@ -10,7 +10,6 @@ export function DemoShell({ title, children }: DemoShellProps) {
           <Link className="font-semibold tracking-tight text-[var(--primary)]" href="/demo">HydroSentinel</Link>
           <nav className="flex items-center gap-1 text-sm text-[var(--muted)]">
             <Link className="rounded-md px-3 py-2 hover:bg-[var(--surface-strong)]" href="/demo">Analyze</Link>
-            <Link className="rounded-md px-3 py-2 hover:bg-[var(--surface-strong)]" href="/login">Sign in</Link>
           </nav>
         </div>
       </header>
