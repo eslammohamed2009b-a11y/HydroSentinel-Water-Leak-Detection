@@ -332,6 +332,19 @@ class HydroSentinelBackendTests(unittest.TestCase):
         self.assertEqual(invalid.json()["detail"], "Invalid token")
         self.assertEqual(invalid.headers["access-control-allow-origin"], "http://localhost:3000")
 
+    def test_selected_vercel_project_deployment_origin_is_allowed_by_cors(self):
+        deployment_origin = "https://hydro-sentinel-water-leak-detection-q4vuokvzq-hydro5.vercel.app"
+        preflight = self.client.options(
+            "/api/v1/demo/analyses",
+            headers={
+                "Origin": deployment_origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        self.assertEqual(preflight.status_code, 200)
+        self.assertEqual(preflight.headers["access-control-allow-origin"], deployment_origin)
+
     def test_event_mode_changes_contextual_handling_and_rejects_bad_input(self):
         headers = self._register_and_login("event@example.com")
         disabled = self.client.post("/api/v1/analyses", headers=headers, json={"scenario_selected": "event.csv", "event_mode": False})
