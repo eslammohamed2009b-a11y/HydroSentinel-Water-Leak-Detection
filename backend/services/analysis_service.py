@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from threading import RLock
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 from sqlalchemy import select
@@ -51,12 +52,6 @@ SCENARIO_SEED_METADATA = {
 _training_cache: dict[bool, tuple[str, pd.DataFrame, dict[str, Any]]] = {}
 _diagnostic_model_cache: dict[bool, str] = {}
 _training_cache_lock = RLock()
-
-
-def build_analysis_id(df: pd.DataFrame) -> str:
-    canonical = df[["Timestamp", "Flow_Rate_LPM", "Avg_Pressure_PSI", "Occupancy_Status"]].copy()
-    canonical["Timestamp"] = canonical["Timestamp"].astype(str)
-    return hashlib.sha256(canonical.to_csv(index=False).encode("utf-8")).hexdigest()[:16]
 
 
 def _scenario_frame_from_rows(rows: list[ScenarioRow]) -> pd.DataFrame:
@@ -182,24 +177,6 @@ def serialize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
 
 def _persist_analysis(session: Session, result: dict[str, Any], owner_user_id: int) -> AnalysisRun:
     payload = serialize_analysis_result(result)
-    existing = session.scalar(
-        select(AnalysisRun).where(
-            AnalysisRun.analysis_id == str(result["analysis_id"]),
-            AnalysisRun.owner_user_id == owner_user_id,
-        )
-    )
-    if existing is not None:
-        existing.payload_json = payload
-        existing.confidence = float(result.get("confidence", 0.0))
-        existing.leak_lpm = float(result.get("leak_lpm", 0.0))
-        existing.total_liters = float(result.get("total_liters", 0.0))
-        existing.has_leak = bool(result.get("has_leak", False))
-        existing.event_mode = bool(result.get("event_mode", False))
-        existing.scenario_selected = str(result.get("scenario_selected", existing.scenario_selected))
-        session.commit()
-        session.refresh(existing)
-        return existing
-
     analysis_run = AnalysisRun(
         analysis_id=str(result["analysis_id"]),
         scenario_selected=str(result["scenario_selected"]),
@@ -272,7 +249,7 @@ def create_feedback(session: Session, analysis_id: str, verdict: str, owner_user
     return feedback
 
 
-def run_analysis(session: Session, scenario_selected: str, event_mode: bool, owner_user_id: int) -> dict[str, Any]:
+def compute_analysis(session: Session, scenario_selected: str, event_mode: bool) -> dict[str, Any]:
     training_df, training_summary = load_training_dataframe(session, event_mode)
     target_df, target_summary, scenario = load_target_dataframe(session, scenario_selected)
     source_fingerprint = str(training_df.attrs.get("source_fingerprint", ""))
@@ -283,15 +260,23 @@ def run_analysis(session: Session, scenario_selected: str, event_mode: bool, own
             _, model_reused = ensure_diagnostic_model(training_df, settings.resolved_model_path)
             _diagnostic_model_cache[event_mode] = source_fingerprint
     result = evaluate_telemetry(target_df, settings.resolved_model_path, event_mode=event_mode)
-    # Scenario content is deterministic, but persisted runs must remain private
-    # to the authenticated user who created them.
-    analysis_id = hashlib.sha256(f"{owner_user_id}:{build_analysis_id(target_df)}".encode("utf-8")).hexdigest()[:16]
-    result["analysis_id"] = analysis_id
     result["model_reused"] = model_reused
     result["source_mode"] = "PostgreSQL Seeded Scenarios"
     result["scenario_selected"] = scenario.file_name
     result["event_mode"] = event_mode
     result["training_summary"] = training_summary
     result["target_summary"] = target_summary
+    return result
+
+
+def run_demo_analysis(session: Session, scenario_selected: str, event_mode: bool) -> dict[str, Any]:
+    """Evaluate a seeded scenario without creating any persistent user data."""
+    return compute_analysis(session, scenario_selected, event_mode)
+
+
+def run_analysis(session: Session, scenario_selected: str, event_mode: bool, owner_user_id: int) -> dict[str, Any]:
+    result = compute_analysis(session, scenario_selected, event_mode)
+    # Every authenticated execution is a distinct, owner-scoped history record.
+    result["analysis_id"] = uuid4().hex
     _persist_analysis(session, result, owner_user_id)
     return result

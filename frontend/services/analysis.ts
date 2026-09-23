@@ -82,3 +82,10 @@ export function submitFeedback(analysisId: string, verdict: string) {
     body: JSON.stringify({ verdict }),
   });
 }
+
+export function runDemoAnalysis(payload: AnalysisRequest) {
+  return apiFetch<AnalysisResponse>("/demo/analyses", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}

@@ -8,6 +8,7 @@ from datetime import datetime
 from datetime import timezone
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+import logging
 
 from backend.api.deps import get_current_user
 from backend.api.schemas.auth import LoginRequest
@@ -17,6 +18,7 @@ from backend.api.schemas.auth import TokenResponse
 from backend.api.schemas.auth import UserResponse
 from backend.auth.security import create_access_token
 from backend.auth.security import create_refresh_token
+from backend.core.config import settings
 from backend.database.session import get_db_session
 from backend.models.user import User
 from backend.services.auth_service import authenticate_user
@@ -27,6 +29,7 @@ from backend.services.auth_service import store_refresh_token
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 
 def _build_user_response(user: User) -> UserResponse:
@@ -42,12 +45,16 @@ def _build_user_response(user: User) -> UserResponse:
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, session: Session = Depends(get_db_session)) -> UserResponse:
+    if not settings.public_registration_enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Public registration is disabled.")
+
     try:
         user = create_user(session, payload.email, payload.full_name, payload.password)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Database unavailable: {exc}") from exc
+        logger.exception("Database failure while registering a user")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Registration is temporarily unavailable.") from exc
 
     return _build_user_response(user)
 
@@ -57,7 +64,8 @@ def login(payload: LoginRequest, session: Session = Depends(get_db_session)) -> 
     try:
         user = authenticate_user(session, payload.email, payload.password)
     except SQLAlchemyError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Database unavailable: {exc}") from exc
+        logger.exception("Database failure while authenticating a user")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Authentication is temporarily unavailable.") from exc
 
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")

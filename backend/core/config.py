@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pydantic import Field
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,9 +24,11 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 7
     frontend_origin: str = "http://localhost:3000"
-    bootstrap_admin_email: str = "admin@hydrosentinel.app"
-    bootstrap_admin_password: str = "ChangeMe123!"
+    bootstrap_admin_enabled: bool = False
+    bootstrap_admin_email: str | None = None
+    bootstrap_admin_password: str | None = None
     bootstrap_admin_name: str = "HydroSentinel Admin"
+    allow_public_registration: bool | None = None
     allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     cors_origin_regex: str | None = r"https://hydro-sentinel-water-leak-detection(?:-25nt-[a-z0-9]+-hydro5|-xi)\.vercel\.app"
 
@@ -34,6 +37,39 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_production_security(self) -> "Settings":
+        if self.app_env.lower() != "production":
+            return self
+
+        normalized_secret = self.jwt_secret_key.strip().lower()
+        if (
+            len(self.jwt_secret_key.strip()) < 32
+            or normalized_secret in {"", "change-me", "secret", "placeholder"}
+            or normalized_secret.startswith("change-me")
+            or normalized_secret.startswith("your-")
+        ):
+            raise ValueError("Production JWT configuration is missing or unsafe.")
+
+        if self.bootstrap_admin_enabled:
+            password = self.bootstrap_admin_password or ""
+            normalized_password = password.strip().lower()
+            if (
+                not self.bootstrap_admin_email
+                or len(password) < 12
+                or normalized_password in {"changeme123!", "change-me", "password", "admin"}
+                or normalized_password.startswith("change-me")
+            ):
+                raise ValueError("Production bootstrap administrator configuration is incomplete or unsafe.")
+
+        return self
+
+    @property
+    def public_registration_enabled(self) -> bool:
+        if self.allow_public_registration is not None:
+            return self.allow_public_registration
+        return self.app_env.lower() != "production"
 
     @property
     def resolved_data_root(self) -> Path:

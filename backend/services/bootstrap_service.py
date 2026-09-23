@@ -63,7 +63,11 @@ def _seed_scenarios(session: Session) -> None:
 
 
 def _seed_admin_user(session: Session) -> None:
-    if not settings.bootstrap_admin_email:
+    if not (
+        settings.bootstrap_admin_enabled
+        and settings.bootstrap_admin_email
+        and settings.bootstrap_admin_password
+    ):
         return
 
     existing_user = session.scalar(select(User).where(User.email == settings.bootstrap_admin_email))
