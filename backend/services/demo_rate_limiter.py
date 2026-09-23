@@ -2,13 +2,15 @@
 
 The limit is intentionally a best-effort per-process control. Deployments with
 multiple workers or changing proxy addresses need an edge or shared limiter for
-globally consistent enforcement; it does not trust request identity headers.
+globally consistent enforcement. X-Forwarded-For is used only when the hosting
+environment is explicitly configured as trusted.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 from collections import deque
+from ipaddress import ip_address
 from threading import RLock
 from time import monotonic
 
@@ -39,3 +41,18 @@ class ProcessLocalDemoRateLimiter:
 
 
 demo_rate_limiter = ProcessLocalDemoRateLimiter()
+
+
+def select_demo_client_host(
+    socket_host: str | None,
+    forwarded_for: str | None,
+    trust_proxy_headers: bool,
+) -> str | None:
+    """Choose a limiter identity without trusting forwarded headers by default."""
+    if trust_proxy_headers and forwarded_for:
+        for candidate in forwarded_for.split(","):
+            try:
+                return str(ip_address(candidate.strip()))
+            except ValueError:
+                continue
+    return socket_host

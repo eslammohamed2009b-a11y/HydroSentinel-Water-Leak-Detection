@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     allow_public_registration: bool | None = None
     demo_rate_limit_requests: int = 12
     demo_rate_limit_window_seconds: int = 60
+    trust_proxy_headers: bool = False
     allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     cors_origin_regex: str | None = r"https://hydro-sentinel-water-leak-detection(?:-25nt-[a-z0-9]+-hydro5|-xi)\.vercel\.app"
 

@@ -116,6 +116,86 @@ class HydroSentinelBackendTests(unittest.TestCase):
             settings.demo_rate_limit_requests = previous_limit
             settings.demo_rate_limit_window_seconds = previous_window
 
+    def test_forwarded_headers_are_ignored_when_proxy_trust_is_disabled(self):
+        from backend.core.config import settings
+
+        previous_limit = settings.demo_rate_limit_requests
+        previous_trust = settings.trust_proxy_headers
+        settings.demo_rate_limit_requests = 1
+        settings.trust_proxy_headers = False
+        try:
+            payload = {"scenario_selected": "normal.csv", "event_mode": False}
+            first = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "198.51.100.10"},
+                json=payload,
+            )
+            second = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "203.0.113.20"},
+                json=payload,
+            )
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(second.status_code, 429)
+        finally:
+            settings.demo_rate_limit_requests = previous_limit
+            settings.trust_proxy_headers = previous_trust
+
+    def test_trusted_forwarded_client_ips_have_independent_demo_limit_buckets(self):
+        from backend.core.config import settings
+
+        previous_limit = settings.demo_rate_limit_requests
+        previous_trust = settings.trust_proxy_headers
+        settings.demo_rate_limit_requests = 1
+        settings.trust_proxy_headers = True
+        try:
+            payload = {"scenario_selected": "normal.csv", "event_mode": False}
+            first = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "malformed, 198.51.100.10, 203.0.113.20"},
+                json=payload,
+            )
+            second = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "203.0.113.20"},
+                json=payload,
+            )
+            repeat_first = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "198.51.100.10"},
+                json=payload,
+            )
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(second.status_code, 200)
+            self.assertEqual(repeat_first.status_code, 429)
+        finally:
+            settings.demo_rate_limit_requests = previous_limit
+            settings.trust_proxy_headers = previous_trust
+
+    def test_malformed_or_missing_trusted_forwarded_headers_fall_back_to_socket_host(self):
+        from backend.core.config import settings
+        from backend.services.demo_rate_limiter import select_demo_client_host
+
+        previous_limit = settings.demo_rate_limit_requests
+        previous_trust = settings.trust_proxy_headers
+        settings.demo_rate_limit_requests = 1
+        settings.trust_proxy_headers = True
+        try:
+            self.assertEqual(select_demo_client_host("testserver", "unknown, broken", True), "testserver")
+            self.assertEqual(select_demo_client_host("testserver", None, True), "testserver")
+            payload = {"scenario_selected": "normal.csv", "event_mode": False}
+            malformed = self.client.post(
+                "/api/v1/demo/analyses",
+                headers={"X-Forwarded-For": "unknown, broken"},
+                json=payload,
+            )
+            missing = self.client.post("/api/v1/demo/analyses", json=payload)
+            self.assertEqual(malformed.status_code, 200)
+            self.assertEqual(missing.status_code, 429)
+        finally:
+            settings.demo_rate_limit_requests = previous_limit
+            settings.trust_proxy_headers = previous_trust
+
     def test_readiness_returns_503_for_controlled_incomplete_dependency(self):
         with patch("backend.api.routers.readiness.database_is_ready", return_value=False):
             response = self.client.get("/api/v1/ready")

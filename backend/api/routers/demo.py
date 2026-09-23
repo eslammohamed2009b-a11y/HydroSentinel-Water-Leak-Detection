@@ -19,6 +19,7 @@ from backend.database.session import get_db_session
 from backend.services.analysis_service import run_demo_analysis
 from backend.services.analysis_service import serialize_analysis_result
 from backend.services.demo_rate_limiter import demo_rate_limiter
+from backend.services.demo_rate_limiter import select_demo_client_host
 
 
 router = APIRouter(prefix="/demo", tags=["demo"])
@@ -31,9 +32,13 @@ def create_demo_analysis(
     request: Request,
     session: Session = Depends(get_db_session),
 ) -> AnalysisResponse:
-    # Deliberately use the observed connection host, not spoofable forwarded/IP headers.
-    if not demo_rate_limiter.allow(
+    client_host = select_demo_client_host(
         request.client.host if request.client else None,
+        request.headers.get("X-Forwarded-For"),
+        settings.trust_proxy_headers,
+    )
+    if not demo_rate_limiter.allow(
+        client_host,
         settings.demo_rate_limit_requests,
         settings.demo_rate_limit_window_seconds,
     ):
