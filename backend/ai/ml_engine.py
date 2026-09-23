@@ -9,6 +9,7 @@ on interaction and reporting.
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
 
 import joblib
@@ -38,6 +39,8 @@ WATER_TREATMENT_ENERGY_KWH_PER_M3 = 0.45
 GRID_EMISSION_KGCO2_PER_KWH = 0.42
 LABELS_PATH = Path(__file__).resolve().parents[2] / "training_labels.csv"
 LEAK_TYPE_LABELS = ["fixture_leak", "valve_failure", "mainline_break"]
+DIAGNOSTIC_MODEL_SCHEMA_VERSION = 2
+DIAGNOSTIC_BASELINE_KEYS = ("flow_profile", "pressure_profile", "overall_flow", "overall_pressure")
 
 
 def calculate_financial_loss(lpm):
@@ -155,10 +158,22 @@ class InsightEngine:
         confidence = float(result.get("confidence", 0.0))
 
         status = str(top_row["Occupancy_Status"]) if top_row is not None and "Occupancy_Status" in top_row else "Unknown"
-        current_flow = float(top_row["Flow_Rate_LPM"]) if top_row is not None else 0.0
-        current_pressure = float(top_row["Avg_Pressure_PSI"]) if top_row is not None else 0.0
-        baseline_flow = float(payload.get("flow_profile", {}).get(status, payload.get("overall_flow", current_flow)))
-        baseline_pressure = float(payload.get("pressure_profile", {}).get(status, payload.get("overall_pressure", current_pressure)))
+        baseline = get_learned_baseline(payload, status)
+
+        if top_row is None or baseline is None:
+            return {
+                "headline": f"{leak_type} pattern detected; baseline comparison unavailable.",
+                "narrative": (
+                    "The synthetic classifier flagged this pattern, but the learned flow and pressure baseline "
+                    "metadata is unavailable. No flow or pressure comparison is shown; human review is still required."
+                ),
+                "drivers": feature_importance[:3],
+                "baseline_available": False,
+            }
+
+        current_flow = float(top_row["Flow_Rate_LPM"])
+        current_pressure = float(top_row["Avg_Pressure_PSI"])
+        baseline_flow, baseline_pressure = baseline
         flow_delta_pct = ((current_flow - baseline_flow) / max(baseline_flow, 1e-6)) * 100.0
         pressure_drop_pct = ((baseline_pressure - current_pressure) / max(baseline_pressure, 1e-6)) * 100.0
 
@@ -179,6 +194,7 @@ class InsightEngine:
             "headline": f"{leak_type} pattern detected with a flow/pressure mismatch.",
             "narrative": narrative,
             "drivers": feature_importance[:3],
+            "baseline_available": True,
             "flow_delta_pct": round(flow_delta_pct, 1),
             "pressure_drop_pct": round(pressure_drop_pct, 1),
             "baseline_flow": round(baseline_flow, 1),
@@ -374,6 +390,60 @@ def build_training_fingerprint(df):
     return hashlib.sha256(canonical.to_csv(index=False).encode("utf-8")).hexdigest()
 
 
+def _finite_float(value):
+    """Return a finite float, or None when artifact metadata is not usable."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def has_diagnostic_baseline_metadata(payload):
+    """Check that a diagnostic artifact carries a usable learned baseline."""
+    if not isinstance(payload, dict):
+        return False
+    flow_profile = payload.get("flow_profile")
+    pressure_profile = payload.get("pressure_profile")
+    if not isinstance(flow_profile, dict) or not flow_profile:
+        return False
+    if not isinstance(pressure_profile, dict) or not pressure_profile:
+        return False
+    if _finite_float(payload.get("overall_flow")) is None:
+        return False
+    if _finite_float(payload.get("overall_pressure")) is None:
+        return False
+    return all(_finite_float(value) is not None for value in flow_profile.values()) and all(
+        _finite_float(value) is not None for value in pressure_profile.values()
+    )
+
+
+def is_current_diagnostic_model_payload(payload, training_fingerprint=None):
+    """Return whether a diagnostic artifact is safe to reuse for this build."""
+    if not isinstance(payload, dict):
+        return False
+    if not payload.get("diagnostic_mode"):
+        return False
+    if payload.get("diagnostic_schema_version") != DIAGNOSTIC_MODEL_SCHEMA_VERSION:
+        return False
+    if training_fingerprint is not None and payload.get("training_fingerprint") != training_fingerprint:
+        return False
+    return has_diagnostic_baseline_metadata(payload)
+
+
+def get_learned_baseline(payload, occupancy_status):
+    """Read a learned diagnostic baseline without ever substituting telemetry."""
+    if not has_diagnostic_baseline_metadata(payload):
+        return None
+    flow_profile = payload["flow_profile"]
+    pressure_profile = payload["pressure_profile"]
+    baseline_flow = _finite_float(flow_profile.get(occupancy_status, payload["overall_flow"]))
+    baseline_pressure = _finite_float(pressure_profile.get(occupancy_status, payload["overall_pressure"]))
+    if baseline_flow is None or baseline_pressure is None:
+        return None
+    return baseline_flow, baseline_pressure
+
+
 def build_feature_pipeline():
     return Pipeline([
         (
@@ -470,6 +540,13 @@ def train_diagnostic_model(df_normal, model_path):
     classifier.fit(feature_frame, leak_type_target)
     regressor.fit(feature_frame, loss_target)
 
+    no_leak_training_df = training_df.loc[training_df["Leak_Type"].astype(str).eq("no_leak")]
+    if no_leak_training_df.empty:
+        raise ValueError("Diagnostic training data must include no_leak rows to build an explainability baseline.")
+    baseline_profile = no_leak_training_df.groupby("Occupancy_Status")[
+        ["Flow_Rate_LPM", "Avg_Pressure_PSI"]
+    ].median()
+
     payload = {
         "classifier": classifier,
         "regressor": regressor,
@@ -480,6 +557,11 @@ def train_diagnostic_model(df_normal, model_path):
         "classifier_classes": classifier.named_steps["model"].classes_.tolist(),
         "regressor_target_mean": float(loss_target.mean()),
         "diagnostic_mode": True,
+        "diagnostic_schema_version": DIAGNOSTIC_MODEL_SCHEMA_VERSION,
+        "flow_profile": {status: float(value) for status, value in baseline_profile["Flow_Rate_LPM"].items()},
+        "pressure_profile": {status: float(value) for status, value in baseline_profile["Avg_Pressure_PSI"].items()},
+        "overall_flow": float(no_leak_training_df["Flow_Rate_LPM"].median()),
+        "overall_pressure": float(no_leak_training_df["Avg_Pressure_PSI"].median()),
     }
     joblib.dump(payload, model_path)
     return payload
@@ -506,7 +588,7 @@ def ensure_diagnostic_model(df_labeled, model_path):
 
     if path.exists():
         payload = joblib.load(path)
-        if payload.get("diagnostic_mode") and payload.get("training_fingerprint") == training_fingerprint:
+        if is_current_diagnostic_model_payload(payload, training_fingerprint):
             return payload, True
 
     payload = train_diagnostic_model(training_df, model_path)

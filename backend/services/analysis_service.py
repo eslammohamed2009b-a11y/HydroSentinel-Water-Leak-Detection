@@ -14,8 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.ai.ml_engine import build_synthetic_training_labels_from_frames
+from backend.ai.ml_engine import build_training_fingerprint
 from backend.ai.ml_engine import ensure_diagnostic_model
 from backend.ai.ml_engine import evaluate_telemetry
+from backend.ai.ml_engine import is_current_diagnostic_model_payload
 from backend.ai.ml_engine import validate_and_clean_data
 from backend.core.config import settings
 from backend.models.analysis import AnalysisFeedback
@@ -129,7 +131,9 @@ def _get_diagnostic_model_bundle(training_df: pd.DataFrame, event_mode: bool) ->
     source_fingerprint = str(training_df.attrs.get("source_fingerprint", ""))
     with _diagnostic_model_locks[event_mode]:
         cached = _diagnostic_model_cache.get(event_mode)
-        if cached is not None and cached[0] == source_fingerprint:
+        if cached is not None and cached[0] == source_fingerprint and is_current_diagnostic_model_payload(
+            cached[1], build_training_fingerprint(training_df)
+        ):
             return cached[1], True
 
         bundle, model_reused = ensure_diagnostic_model(

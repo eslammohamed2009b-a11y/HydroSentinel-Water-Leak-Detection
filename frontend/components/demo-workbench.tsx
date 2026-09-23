@@ -113,6 +113,7 @@ export function DemoWorkbench() {
     Leak_Flag: Boolean(point.Leak_Flag),
   })), [telemetry]);
   const reasoning = result?.insights.reasoning as Record<string, unknown> | undefined;
+  const baselineAvailable = reasoning?.baseline_available !== false;
   const financial = result?.financial_loss ?? {};
   const environmental = result?.environmental_impact ?? {};
 
@@ -210,13 +211,13 @@ export function DemoWorkbench() {
             <section className="border border-[var(--line)] bg-white p-5">
               <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">AI reasoning</div>
               {result.has_leak ? (
-                <ol className="mt-4 grid gap-2 text-sm leading-6 text-[var(--foreground)]">
+                baselineAvailable ? <ol className="mt-4 grid gap-2 text-sm leading-6 text-[var(--foreground)]">
                   <li><span className="font-semibold">1. Flow evidence:</span> {typeof reasoning?.current_flow === "number" && typeof reasoning?.baseline_flow === "number" ? `${reasoning.current_flow.toFixed(1)} L/min observed against a ${reasoning.baseline_flow.toFixed(1)} L/min learned baseline.` : "Flow was evaluated against the learned synthetic baseline."}</li>
                   <li><span className="font-semibold">2. Pressure evidence:</span> {typeof reasoning?.current_pressure === "number" && typeof reasoning?.baseline_pressure === "number" ? `${reasoning.current_pressure.toFixed(1)} PSI observed against a ${reasoning.baseline_pressure.toFixed(1)} PSI learned baseline${typeof reasoning.pressure_drop_pct === "number" ? ` (${pressureDropValue(reasoning.pressure_drop_pct)})` : ""}.` : "Pressure was evaluated against the learned synthetic baseline."}</li>
                   <li><span className="font-semibold">3. Operating context:</span> compared as {result.event_mode ? "Event / High Activity" : "Standard"}.</li>
                   <li><span className="font-semibold">4. Interpretation:</span> the pattern differs from the learned synthetic baseline.</li>
                   <li><span className="font-semibold">5. Decision support:</span> human review required.</li>
-                </ol>
+                </ol> : <p className="mt-3 text-sm leading-6 text-[var(--muted)]">{typeof reasoning?.narrative === "string" ? reasoning.narrative : "Baseline comparison is unavailable for this alert; human review is still required."}</p>
               ) : (
                 <p className="mt-3 text-sm leading-6 text-[var(--muted)]">Flow, pressure, and operating context remained within the learned synthetic baseline → no review required for this simulated scenario.</p>
               )}

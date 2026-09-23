@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+import joblib
 from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy import select
@@ -356,6 +358,72 @@ class HydroSentinelBackendTests(unittest.TestCase):
         self.assertFalse(enabled.json()["has_leak"])
         malformed = self.client.post("/api/v1/analyses", headers=headers, json={"scenario_selected": "not-a-scenario.csv", "event_mode": False})
         self.assertEqual(malformed.status_code, 400)
+
+    def test_diagnostic_explainability_uses_no_leak_baselines_and_rejects_stale_artifacts(self):
+        from backend.ai.ml_engine import DIAGNOSTIC_MODEL_SCHEMA_VERSION
+        from backend.ai.ml_engine import DIAGNOSTIC_BASELINE_KEYS
+        from backend.ai.ml_engine import InsightEngine
+        from backend.ai.ml_engine import ensure_diagnostic_model
+        from backend.ai.ml_engine import train_diagnostic_model
+        from backend.database.session import SessionLocal
+        from backend.database.session import ensure_database_ready
+        from backend.services.analysis_service import load_training_dataframe
+        from backend.services.analysis_service import run_demo_analysis
+
+        ensure_database_ready()
+        session = SessionLocal()
+        try:
+            training_df, _ = load_training_dataframe(session, event_mode=False)
+            no_leak_rows = training_df.loc[training_df["Leak_Type"].eq("no_leak")]
+            self.assertFalse(no_leak_rows.empty)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                model_path = Path(temp_dir) / "diagnostic.joblib"
+                payload = train_diagnostic_model(training_df, model_path)
+                for key in DIAGNOSTIC_BASELINE_KEYS:
+                    self.assertIn(key, payload)
+                self.assertEqual(payload["diagnostic_schema_version"], DIAGNOSTIC_MODEL_SCHEMA_VERSION)
+                self.assertEqual(payload["flow_profile"], no_leak_rows.groupby("Occupancy_Status")["Flow_Rate_LPM"].median().to_dict())
+                self.assertEqual(payload["pressure_profile"], no_leak_rows.groupby("Occupancy_Status")["Avg_Pressure_PSI"].median().to_dict())
+                self.assertEqual(payload["overall_flow"], float(no_leak_rows["Flow_Rate_LPM"].median()))
+                self.assertEqual(payload["overall_pressure"], float(no_leak_rows["Avg_Pressure_PSI"].median()))
+
+                stale_payload = dict(payload)
+                stale_payload.pop("diagnostic_schema_version")
+                for key in DIAGNOSTIC_BASELINE_KEYS:
+                    stale_payload.pop(key)
+                joblib.dump(stale_payload, model_path)
+                refreshed_payload, reused = ensure_diagnostic_model(training_df, model_path)
+                self.assertFalse(reused)
+                self.assertEqual(refreshed_payload["diagnostic_schema_version"], DIAGNOSTIC_MODEL_SCHEMA_VERSION)
+
+            normal_leak = run_demo_analysis(session, "normal_leak.csv", False)
+            self.assertTrue(normal_leak["has_leak"])
+            normal_reasoning = normal_leak["insights"]["reasoning"]
+            normal_top_row = normal_leak["top_row"]
+            expected_flow = no_leak_rows.groupby("Occupancy_Status")["Flow_Rate_LPM"].median().to_dict().get(
+                normal_top_row["Occupancy_Status"], float(no_leak_rows["Flow_Rate_LPM"].median())
+            )
+            expected_pressure = no_leak_rows.groupby("Occupancy_Status")["Avg_Pressure_PSI"].median().to_dict().get(
+                normal_top_row["Occupancy_Status"], float(no_leak_rows["Avg_Pressure_PSI"].median())
+            )
+            self.assertTrue(normal_reasoning["baseline_available"])
+            self.assertEqual(normal_reasoning["baseline_flow"], round(expected_flow, 1))
+            self.assertEqual(normal_reasoning["baseline_pressure"], round(expected_pressure, 1))
+            self.assertNotEqual(normal_reasoning["baseline_flow"], normal_reasoning["current_flow"])
+            self.assertFalse(normal_reasoning["flow_delta_pct"] == 0 and normal_reasoning["pressure_drop_pct"] == 0)
+
+            unavailable = InsightEngine.build_reasoning_insight(normal_leak, {"diagnostic_mode": True})
+            self.assertFalse(unavailable["baseline_available"])
+            self.assertNotIn("flow_delta_pct", unavailable)
+            self.assertNotIn("baseline_flow", unavailable)
+            self.assertIn("unavailable", unavailable["narrative"])
+
+            self.assertTrue(run_demo_analysis(session, "event_leak.csv", True)["has_leak"])
+            self.assertFalse(run_demo_analysis(session, "normal.csv", False)["has_leak"])
+            self.assertFalse(run_demo_analysis(session, "event.csv", True)["has_leak"])
+        finally:
+            session.close()
 
 
 if __name__ == "__main__":
