@@ -4,7 +4,7 @@ import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { DemoShell } from "@/components/demo-shell";
 import { TelemetryChart, type TelemetryPoint } from "@/components/telemetry-chart";
-import { fetchScenarios, runDemoAnalysis, type AnalysisResponse, type ScenarioSummary } from "@/services/analysis";
+import { checkAnalysisServiceReady, fetchScenarios, runDemoAnalysis, type AnalysisResponse, type ScenarioSummary } from "@/services/analysis";
 
 type DemoScenario = {
   key: "normal" | "hidden-leak" | "high-activity" | "high-activity-leak";
@@ -20,6 +20,8 @@ const demoScenarios: DemoScenario[] = [
   { key: "high-activity", title: "High Activity", description: "Legitimate high demand", eventMode: true, hasLeak: false },
   { key: "high-activity-leak", title: "High Activity + Leak", description: "Context plus abnormal behavior", eventMode: true, hasLeak: true },
 ];
+const ESTIMATED_COLD_START_SECONDS = 60;
+const READINESS_POLL_INTERVAL_MS = 3_000;
 
 function scenarioFor(items: ScenarioSummary[], target: Pick<DemoScenario, "eventMode" | "hasLeak">) {
   return items.find((item) => item.occupancy_mode === (target.eventMode ? "event" : "normal") && item.expected_has_leak === target.hasLeak);
@@ -35,6 +37,11 @@ function evidenceValue(value: unknown, suffix: string) {
 
 function pressureDropValue(value: unknown) {
   return typeof value === "number" ? `${Math.max(value, 0).toFixed(1)}% drop` : "—";
+}
+
+function formatEstimatedWait(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 function HelperPanel({ title, children }: { title: string; children: React.ReactNode }) {
@@ -53,6 +60,7 @@ export function DemoWorkbench() {
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(true);
+  const [estimatedWaitSeconds, setEstimatedWaitSeconds] = useState(ESTIMATED_COLD_START_SECONDS);
   const [error, setError] = useState<string | null>(null);
   const [guidedMode, setGuidedMode] = useState(true);
 
@@ -60,23 +68,57 @@ export function DemoWorkbench() {
   const selectedScenario = scenarioFor(scenarios, { eventMode, hasLeak: selected.hasLeak });
 
   useEffect(() => {
-    let cancelled = false;
-    async function load() {
+    let mounted = true;
+    let pollTimer: number | undefined;
+    let countdownTimer: number | undefined;
+    let activeRequest: AbortController | undefined;
+
+    const stopCountdown = () => {
+      if (countdownTimer !== undefined) window.clearInterval(countdownTimer);
+    };
+
+    async function loadScenarios() {
       try {
         const items = await fetchScenarios();
-        if (!cancelled) {
+        if (mounted) {
           setScenarios(items);
           const initial = scenarioFor(items, { eventMode: false, hasLeak: true });
           if (!initial) setError("The demo scenarios are unavailable. Please retry.");
         }
       } catch {
-        if (!cancelled) setError("Could not connect to the analysis service. Please retry.");
-      } finally {
-        if (!cancelled) setConnecting(false);
+        if (mounted) setError("The demo scenarios are unavailable. Please retry.");
       }
     }
-    void load();
-    return () => { cancelled = true; };
+
+    async function checkReadiness() {
+      if (!mounted || activeRequest) return;
+
+      activeRequest = new AbortController();
+      const ready = await checkAnalysisServiceReady(activeRequest.signal);
+      activeRequest = undefined;
+      if (!mounted) return;
+
+      if (ready) {
+        stopCountdown();
+        setConnecting(false);
+        void loadScenarios();
+        return;
+      }
+
+      pollTimer = window.setTimeout(() => void checkReadiness(), READINESS_POLL_INTERVAL_MS);
+    }
+
+    countdownTimer = window.setInterval(() => {
+      setEstimatedWaitSeconds((seconds) => Math.max(seconds - 1, 0));
+    }, 1_000);
+    void checkReadiness();
+
+    return () => {
+      mounted = false;
+      if (pollTimer !== undefined) window.clearTimeout(pollTimer);
+      stopCountdown();
+      activeRequest?.abort();
+    };
   }, []);
 
   function selectScenario(next: DemoScenario) {
@@ -140,7 +182,7 @@ export function DemoWorkbench() {
               <div className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">Choose a scenario</div>
               {guidedMode ? <p className="mt-1 text-sm text-[var(--muted)]">Compare normal demand, abnormal behavior, and legitimate high activity using the existing seeded scenarios.</p> : null}
             </div>
-            {connecting ? <span className="text-sm text-[var(--muted)]">Connecting to analysis service…</span> : null}
+            {connecting ? <span className="text-sm text-[var(--muted)]">Starting analysis service…</span> : null}
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {demoScenarios.map((scenario) => {
@@ -177,9 +219,22 @@ export function DemoWorkbench() {
 
           <div className="mt-5 flex flex-wrap items-center gap-4">
             <button className="bg-[var(--primary)] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[var(--primary-strong)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-60" disabled={connecting || loading || !selectedScenario} onClick={() => void handleAnalyze()} type="button">
-              {loading ? "Analyzing telemetry…" : "Analyze scenario"}
+              {connecting ? "Starting analysis service…" : loading ? "Analyzing telemetry…" : "Analyze scenario"}
             </button>
-            {guidedMode ? <p className="text-sm text-[var(--muted)]">High demand alone is not sufficient evidence of a leak; operating context changes interpretation.</p> : null}
+            {connecting ? (
+              <div className="max-w-2xl border border-[var(--line)] bg-[var(--surface-strong)] px-4 py-3" role="status" aria-live="polite">
+                <div className="flex items-center gap-2 text-sm font-semibold text-[var(--foreground)]">
+                  <span aria-hidden="true" className="size-3 animate-spin rounded-full border-2 border-[var(--primary)] border-r-transparent" />
+                  Starting the analysis service
+                </div>
+                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">This demo runs on a free backend that sleeps when inactive. Starting it again can take around a minute. Keep this page open. Analysis will become available automatically when the service is ready.</p>
+                {estimatedWaitSeconds > 0 ? (
+                  <p aria-hidden="true" className="mt-2 text-sm font-medium text-[var(--foreground)]">Estimated wait: {formatEstimatedWait(estimatedWaitSeconds)}</p>
+                ) : (
+                  <p className="mt-2 text-sm font-medium text-[var(--foreground)]">Almost ready. The service is still starting.</p>
+                )}
+              </div>
+            ) : guidedMode ? <p className="text-sm text-[var(--muted)]">High demand alone is not sufficient evidence of a leak; operating context changes interpretation.</p> : null}
           </div>
           {guidedMode ? <div className="mt-3"><HelperPanel title="What happens when I click Analyze?">HydroSentinel evaluates the selected flow, pressure, and operating-context telemetry against the learned synthetic baseline, then returns a non-persistent result for human review.</HelperPanel></div> : null}
           {error ? <p className="mt-4 border-l-2 border-[var(--danger)] bg-[rgba(195,63,56,0.08)] px-3 py-2 text-sm text-[var(--danger)]">{error}</p> : null}

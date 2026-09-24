@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api";
+import { apiFetch, isApiReady } from "@/lib/api";
 
 export type ScenarioSummary = {
   slug: string;
@@ -59,6 +59,10 @@ export async function fetchScenarios() {
     await new Promise((resolve) => window.setTimeout(resolve, 800));
     return apiFetch<ScenarioSummary[]>("/scenarios");
   }
+}
+
+export function checkAnalysisServiceReady(signal?: AbortSignal) {
+  return isApiReady(signal);
 }
 
 export function runAnalysis(payload: AnalysisRequest) {

@@ -1,5 +1,6 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 const REQUEST_TIMEOUT_MS = 25_000;
+const READINESS_TIMEOUT_MS = 5_000;
 
 function redirectToDemo() {
   if (typeof window === "undefined") return;
@@ -39,4 +40,29 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+/** Probe the lightweight readiness route with a responsive, abortable timeout. */
+export async function isApiReady(signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false;
+
+  const controller = new AbortController();
+  const abortForCaller = () => controller.abort();
+  signal?.addEventListener("abort", abortForCaller, { once: true });
+  const timeout = window.setTimeout(() => controller.abort(), READINESS_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/ready`, {
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    if (!response.ok) return false;
+    const payload = await response.json() as { status?: string };
+    return payload.status === "ready";
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortForCaller);
+  }
 }
